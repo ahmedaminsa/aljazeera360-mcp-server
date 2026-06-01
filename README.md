@@ -1,5 +1,6 @@
 # Al Jazeera 360 MCP Server
 
+[![CI](https://github.com/ahmedaminsa/aljazeera360-mcp-server/actions/workflows/ci.yml/badge.svg)](https://github.com/ahmedaminsa/aljazeera360-mcp-server/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![MCP Protocol](https://img.shields.io/badge/MCP-Compatible-purple.svg)](https://modelcontextprotocol.io)
@@ -162,6 +163,9 @@ The server works **without any configuration** in guest mode. For full content a
 ---
 
 ## Deploy
+
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/aljazeera360-mcp)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/ahmedaminsa/aljazeera360-mcp-server)
 
 ### Docker
 
