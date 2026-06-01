@@ -21,10 +21,13 @@ Discovered & Tested Endpoints:
 import json
 import logging
 import os
+import time
 from typing import Optional
 from datetime import datetime, timedelta
+from functools import wraps
 
 import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from mcp.server.fastmcp import FastMCP
 
 # Configure logging
@@ -62,38 +65,119 @@ SECTIONS = {
 }
 
 # ============================================================================
+# Utilities: TTL Cache & Retry
+# ============================================================================
+
+def ttl_cache(ttl_seconds: int = 300):
+    """Simple TTL cache decorator for async functions."""
+    def decorator(func):
+        cache = {}
+        
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            key = (args, tuple(sorted(kwargs.items())))
+            now = time.time()
+            if key in cache:
+                result, timestamp = cache[key]
+                if now - timestamp < ttl_seconds:
+                    return result
+            result = await func(*args, **kwargs)
+            cache[key] = (result, now)
+            return result
+        
+        wrapper.cache_clear = lambda: cache.clear()
+        return wrapper
+    return decorator
+
+
+# Retry decorator for API calls (retries on 5xx and timeouts)
+api_retry = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.TimeoutException)),
+    reraise=True,
+)
+
+
+# ============================================================================
 # Token Management
 # ============================================================================
 
 class TokenManager:
     """Manages authentication tokens for the Dice/Vesper API.
     
-    The platform uses Firebase-based authentication.
-    - Guest tokens: obtained via POST /api/v4/session
-    - Logged-in tokens: obtained via Firebase auth flow
-    - Tokens expire every ~10 minutes
+    Authentication flow (in priority order):
+    1. Use existing valid token (if not expired)
+    2. Refresh using refresh token (POST /api/v4/session/token/refresh)
+    3. Create new guest session (POST /api/v4/session)
+    4. Fall back to AJ360_AUTH_TOKEN environment variable
+    
+    Token lifecycle:
+    - Auth tokens expire every ~10 minutes
     - Refresh tokens are long-lived (~1 year)
+    - Guest sessions are anonymous but fully functional
     """
     
     def __init__(self):
-        self._auth_token: Optional[str] = None
-        self._refresh_token: Optional[str] = None
+        self._auth_token: Optional[str] = os.environ.get("AJ360_AUTH_TOKEN", "") or None
+        self._refresh_token: Optional[str] = os.environ.get("AJ360_REFRESH_TOKEN", "") or None
         self._token_expiry: Optional[datetime] = None
+        if self._auth_token:
+            # Assume env token is fresh for 5 minutes
+            self._token_expiry = datetime.now() + timedelta(minutes=5)
     
     async def get_token(self) -> str:
         """Get a valid auth token, refreshing if necessary."""
         if self._auth_token and self._token_expiry and datetime.now() < self._token_expiry:
             return self._auth_token
         
-        # Try to get a new guest token
+        # Try refresh token first (most reliable)
+        if self._refresh_token:
+            refreshed = await self._refresh_auth_token()
+            if refreshed:
+                return self._auth_token or ""
+        
+        # Fall back to new guest session
         await self._get_guest_token()
         return self._auth_token or ""
     
+    async def _refresh_auth_token(self) -> bool:
+        """Refresh the auth token using the refresh token."""
+        async with httpx.AsyncClient(timeout=15) as http:
+            try:
+                resp = await http.post(
+                    f"{API_BASE}/api/v4/session/token/refresh",
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                        "x-api-key": API_KEY,
+                        "Realm": REALM,
+                        "app": "dice",
+                    },
+                    json={"refreshToken": self._refresh_token}
+                )
+                
+                if resp.status_code == 200:
+                    data = resp.json()
+                    self._auth_token = data.get("authorisationToken", "")
+                    new_refresh = data.get("refreshToken")
+                    if new_refresh:
+                        self._refresh_token = new_refresh
+                    self._token_expiry = datetime.now() + timedelta(minutes=9)
+                    logger.info("Successfully refreshed auth token")
+                    return True
+                else:
+                    logger.warning(f"Token refresh returned {resp.status_code}")
+                    return False
+            except Exception as e:
+                logger.error(f"Failed to refresh token: {e}")
+                return False
+    
     async def _get_guest_token(self):
         """Get a guest/anonymous token from the platform."""
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15) as http:
             try:
-                resp = await client.post(
+                resp = await http.post(
                     f"{API_BASE}/api/v4/session",
                     headers={
                         "Accept": "application/json",
@@ -113,17 +197,8 @@ class TokenManager:
                     logger.info("Successfully obtained guest token")
                 else:
                     logger.warning(f"Session endpoint returned {resp.status_code}")
-                    # Use environment variable token as fallback
-                    env_token = os.environ.get("AJ360_AUTH_TOKEN", "")
-                    if env_token:
-                        self._auth_token = env_token
-                        self._token_expiry = datetime.now() + timedelta(minutes=5)
             except Exception as e:
                 logger.error(f"Failed to get guest token: {e}")
-                env_token = os.environ.get("AJ360_AUTH_TOKEN", "")
-                if env_token:
-                    self._auth_token = env_token
-                    self._token_expiry = datetime.now() + timedelta(minutes=5)
     
     def set_token(self, auth_token: str, refresh_token: str = ""):
         """Manually set tokens (useful for initialization with logged-in user token)."""
@@ -164,6 +239,8 @@ class AlJazeera360Client:
             headers["Authorization"] = f"Bearer {token}"
         return headers
     
+    @api_retry
+    @ttl_cache(ttl_seconds=120)
     async def get_home_content(self, items_per_bucket: int = 12) -> dict:
         """Get the home page content with all buckets.
         
@@ -190,6 +267,8 @@ class AlJazeera360Client:
             resp.raise_for_status()
             return resp.json()
     
+    @api_retry
+    @ttl_cache(ttl_seconds=300)
     async def get_section_content(self, section_id: str, items_per_bucket: int = 12) -> dict:
         """Get content for a specific section/channel.
         
@@ -215,6 +294,8 @@ class AlJazeera360Client:
             resp.raise_for_status()
             return resp.json()
     
+    @api_retry
+    @ttl_cache(ttl_seconds=600)
     async def get_vod_details(self, vod_id: int) -> dict:
         """Get detailed information about a specific video.
         
@@ -231,6 +312,8 @@ class AlJazeera360Client:
             resp.raise_for_status()
             return resp.json()
     
+    @api_retry
+    @ttl_cache(ttl_seconds=600)
     async def get_series_details(self, series_id: int) -> dict:
         """Get series details including seasons list.
         
@@ -247,6 +330,8 @@ class AlJazeera360Client:
             resp.raise_for_status()
             return resp.json()
     
+    @api_retry
+    @ttl_cache(ttl_seconds=300)
     async def get_season_episodes(self, season_id: int, page_size: int = 20) -> dict:
         """Get episodes for a specific season.
         
@@ -264,6 +349,7 @@ class AlJazeera360Client:
             resp.raise_for_status()
             return resp.json()
     
+    @api_retry
     async def search_content(self, query: str, page_size: int = 20) -> dict:
         """Search for content across the platform.
         
@@ -659,13 +745,14 @@ async def get_season_episodes(season_id: int, max_episodes: int = 20) -> str:
 
 
 @mcp.tool()
-async def search_videos(query: str, max_results: int = 20) -> str:
+async def search_videos(query: str, content_type: Optional[str] = None, max_results: int = 20) -> str:
     """
     Search for videos, documentaries, and programs on Al Jazeera 360.
     Supports Arabic and English search queries.
+    Optionally filter by content type.
     
     البحث عن فيديوهات ووثائقيات وبرامج على منصة الجزيرة 360.
-    يدعم البحث بالعربية والإنجليزية.
+    يدعم البحث بالعربية والإنجليزية. يمكن تصفية النتائج حسب نوع المحتوى.
     
     Examples:
     - "فلسطين" — videos about Palestine
@@ -675,14 +762,21 @@ async def search_videos(query: str, max_results: int = 20) -> str:
     
     Args:
         query: Search term in Arabic or English
+        content_type: Optional filter — "VOD" for single videos, "SERIES" for series only, None for all
         max_results: Maximum number of results to return (default: 20)
     """
     try:
         data = await client.search_content(query, page_size=max_results)
         results = format_search_results(data)
         
+        # Apply content_type filter if specified
+        if content_type:
+            content_type_upper = content_type.upper()
+            results = [r for r in results if r.get("type", "").upper() == content_type_upper]
+        
         output = {
             "query": query,
+            "content_type_filter": content_type,
             "total_results": len(results),
             "platform": "Al Jazeera 360",
             "results": results,
@@ -794,8 +888,67 @@ async def about_resource() -> str:
 
 
 # ============================================================================
+# MCP Prompts (Pre-built scenarios for AI assistants)
+# ============================================================================
+
+@mcp.prompt()
+def recommend_documentary(topic: str) -> str:
+    """Recommend a documentary about a specific topic from Al Jazeera 360."""
+    return f"""Search Al Jazeera 360 for documentaries about \"{topic}\".
+Use search_videos with the topic, then filter for documentary content.
+For each result, get full details using get_video_details.
+Present the top 3 recommendations with:
+- Title and description
+- Duration
+- Direct watch link on aljazeera360.com
+Prioritize content that is most relevant and recently published."""
+
+
+@mcp.prompt()
+def summarize_latest(section: str = "AJA") -> str:
+    """Summarize the latest episodes from a section on Al Jazeera 360."""
+    return f"""Get the latest episodes from the \"{section}\" section on Al Jazeera 360.
+Use get_latest_episodes to fetch recent content.
+For each episode, provide:
+- Title
+- Brief description
+- Duration
+- Watch link
+Group them by topic if possible and highlight the most notable ones."""
+
+
+@mcp.prompt()
+def explore_series(series_name: str) -> str:
+    """Explore a series on Al Jazeera 360 — find seasons and episodes."""
+    return f"""Find the series \"{series_name}\" on Al Jazeera 360.
+1. Use search_videos to find the series
+2. Use get_series_details to get all seasons
+3. Use get_season_episodes on the latest season
+Present a complete overview: series description, number of seasons,
+and list the latest season's episodes with watch links."""
+
+
+# ============================================================================
 # Entry Point
 # ============================================================================
 
+def main():
+    """Run the MCP server.
+    
+    Transport is determined by MCP_TRANSPORT env var:
+    - "stdio" (default): For local MCP clients (Claude Desktop, Cursor, etc.)
+    - "sse": For cloud deployment (Cloud Run, Render, Railway, etc.)
+    """
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    
+    if transport == "sse":
+        port = int(os.environ.get("MCP_PORT", "8080"))
+        logger.info(f"Starting Al Jazeera 360 MCP Server (SSE transport on port {port})")
+        mcp.run(transport="sse", sse_params={"host": "0.0.0.0", "port": port})
+    else:
+        logger.info("Starting Al Jazeera 360 MCP Server (stdio transport)")
+        mcp.run(transport="stdio")
+
+
 if __name__ == "__main__":
-    mcp.run()
+    main()

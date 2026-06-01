@@ -1,0 +1,45 @@
+name: aljazeera360-mcp
+display_name: Al Jazeera 360
+description: Connect AI assistants to Al Jazeera 360's streaming catalog. Search, browse, and retrieve Arabic video content with direct watch links.
+icon: 🎬
+author: ahmedaminsa
+repository: https://github.com/ahmedaminsa/aljazeera360-mcp-server
+license: MIT
+language: python
+transport: stdio
+tags:
+  - arabic
+  - video
+  - streaming
+  - news
+  - media
+  - aljazeera
+  - documentaries
+
+tools:
+  - name: list_sections
+    description: List all available sections/channels on Al Jazeera 360
+  - name: get_trending_content
+    description: Get featured and most-watched content from the homepage
+  - name: browse_section
+    description: Browse content in a specific section (Documentaries, Podcasts, etc.)
+  - name: get_video_details
+    description: Get full metadata for a video (title, duration, quality, watch URL)
+  - name: get_series_details
+    description: Get series info with all available seasons
+  - name: get_season_episodes
+    description: List all episodes in a specific season
+  - name: search_videos
+    description: Full-text search across all content (Arabic & English)
+  - name: get_latest_episodes
+    description: Get the most recently published episodes
+
+resources:
+  - name: aljazeera360://sections
+    description: List of all available sections
+  - name: aljazeera360://about
+    description: Platform information
+
+install:
+  pip: aljazeera360-mcp
+  command: python server.py

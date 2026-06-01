@@ -29,7 +29,7 @@ The AI connects to this server, fetches real data from Al Jazeera 360, and retur
 | `get_video_details` | Returns full metadata for a video: title, description, duration, quality (up to 4K), watch URL |
 | `get_series_details` | Returns series info with all available seasons |
 | `get_season_episodes` | Lists all episodes within a specific season |
-| `search_videos` | Full-text search across all content (Arabic & English) |
+| `search_videos` | Full-text search across all content (Arabic & English), with optional content type filter |
 | `get_latest_episodes` | Returns the most recently published episodes from any section |
 
 ---
@@ -66,6 +66,28 @@ cd aljazeera360-mcp-server
 pip install -r requirements.txt
 ```
 
+### Configure Authentication
+
+The server supports multiple authentication methods (in priority order):
+
+1. **Refresh Token (Recommended)** — Auto-refreshes every 10 minutes, valid for ~1 year:
+   ```bash
+   export AJ360_REFRESH_TOKEN="eyJ..."
+   ```
+   
+2. **Auth Token** — Direct token, expires in ~10 minutes:
+   ```bash
+   export AJ360_AUTH_TOKEN="eyJ..."
+   ```
+
+3. **Guest Mode** — No configuration needed. The server auto-creates a guest session.
+
+**How to get your refresh token:**
+1. Open https://www.aljazeera360.com in your browser
+2. Log in with your account
+3. Open DevTools → Console → Run: `localStorage.getItem('dice:refreshToken')`
+4. Copy the token value
+
 ### Test
 
 ```bash
@@ -94,7 +116,10 @@ Add to your config file:
   "mcpServers": {
     "aljazeera360": {
       "command": "python",
-      "args": ["/full/path/to/aljazeera360-mcp-server/server.py"]
+      "args": ["/full/path/to/aljazeera360-mcp-server/server.py"],
+      "env": {
+        "AJ360_REFRESH_TOKEN": "your-refresh-token-here"
+      }
     }
   }
 }
@@ -111,6 +136,7 @@ This server uses the standard MCP protocol over `stdio`. It works with any MCP-c
 - [Claude Desktop](https://claude.ai/download)
 - [Cursor](https://cursor.sh)
 - [Continue](https://continue.dev)
+- [Windsurf](https://windsurf.ai)
 - [MCP Inspector](https://github.com/modelcontextprotocol/inspector) (for testing)
 - Any custom MCP client
 
@@ -120,10 +146,13 @@ This server uses the standard MCP protocol over `stdio`. It works with any MCP-c
 
 | Variable | Required | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `AJ360_AUTH_TOKEN` | No | Guest mode | Firebase auth token for full content access |
-| `AJ360_API_KEY` | No | Built-in | Platform API key |
+| `AJ360_REFRESH_TOKEN` | No | — | Long-lived refresh token (~1 year). Best for production. |
+| `AJ360_AUTH_TOKEN` | No | Guest mode | Short-lived auth token (~10 min). Good for quick testing. |
+| `AJ360_API_KEY` | No | Built-in | Platform API key (public, from browser network requests). |
+| `MCP_TRANSPORT` | No | `stdio` | Transport mode: `stdio` (local) or `sse` (cloud). |
+| `MCP_PORT` | No | `8080` | Port for SSE transport (cloud deployment). |
 
-The server works **without any configuration**. It automatically authenticates as a guest.
+The server works **without any configuration** in guest mode. For full content access, provide a refresh token.
 
 ---
 
@@ -133,7 +162,7 @@ The server works **without any configuration**. It automatically authenticates a
 
 ```bash
 docker build -t aljazeera360-mcp .
-docker run -p 8080:8080 aljazeera360-mcp
+docker run -p 8080:8080 -e MCP_TRANSPORT=sse -e AJ360_REFRESH_TOKEN=your-token aljazeera360-mcp
 ```
 
 ### Google Cloud Run
@@ -143,12 +172,13 @@ gcloud builds submit --tag gcr.io/YOUR_PROJECT/aljazeera360-mcp
 gcloud run deploy aljazeera360-mcp \
   --image gcr.io/YOUR_PROJECT/aljazeera360-mcp \
   --platform managed \
-  --allow-unauthenticated
+  --allow-unauthenticated \
+  --set-env-vars="MCP_TRANSPORT=sse,AJ360_REFRESH_TOKEN=your-token"
 ```
 
 ### Render / Railway / Fly.io
 
-Connect this repo — auto-deploys from the included Dockerfile.
+Connect this repo — auto-deploys from the included Dockerfile. Set environment variables in the dashboard.
 
 ---
 
@@ -157,27 +187,44 @@ Connect this repo — auto-deploys from the included Dockerfile.
 ```
 Your AI Assistant
        │
-       │  MCP Protocol
+       │  MCP Protocol (stdio or SSE)
        ▼
-┌──────────────────────┐
-│  This MCP Server     │
-│  (Token Management   │
-│   + 8 Tools)         │
-└──────────┬───────────┘
+┌──────────────────────────┐
+│  This MCP Server         │
+│  ┌────────────────────┐  │
+│  │ Token Manager      │  │
+│  │ (auto-refresh)     │  │
+│  ├────────────────────┤  │
+│  │ 8 Tools + Prompts  │  │
+│  │ + Retry + Cache    │  │
+│  └────────────────────┘  │
+└──────────┬───────────────┘
            │
-           │  HTTPS
+           │  HTTPS (authenticated)
            ▼
-┌──────────────────────┐
-│  Al Jazeera 360 API  │
-│  (Vesper/Dice)       │
-└──────────┬───────────┘
+┌──────────────────────────┐
+│  Al Jazeera 360 API      │
+│  (Vesper/Dice Platform)  │
+└──────────┬───────────────┘
            │
            ▼
-┌──────────────────────┐
-│  aljazeera360.com    │
-│  (Watch links)       │
-└──────────────────────┘
+┌──────────────────────────┐
+│  aljazeera360.com        │
+│  (Direct watch links)    │
+└──────────────────────────┘
 ```
+
+---
+
+## Built-in Prompts
+
+The server includes pre-built prompts for common AI scenarios:
+
+| Prompt | Description |
+| :--- | :--- |
+| `recommend_documentary` | Find and recommend documentaries about a specific topic |
+| `summarize_latest` | Summarize the latest episodes from a section |
+| `explore_series` | Explore a series — find all seasons and episodes |
 
 ---
 
@@ -193,14 +240,16 @@ Calling `search_videos("غزة")` returns:
     {
       "title": "المسعفون أهداف إسرائيل المتنقلة!",
       "type": "VOD",
+      "duration": "24:53",
       "id": "965741",
       "watch_url": "https://www.aljazeera360.com/video/965741"
     },
     {
-      "title": "حقنة تذيب الأورام السرطانية",
+      "title": "قيادة السنوار لجهاز حماس الأمني",
       "type": "VOD",
-      "id": "965738",
-      "watch_url": "https://www.aljazeera360.com/video/965738"
+      "duration": "54:57",
+      "id": "953659",
+      "watch_url": "https://www.aljazeera360.com/video/953659"
     }
   ]
 }
@@ -212,11 +261,13 @@ Calling `search_videos("غزة")` returns:
 
 | Component | Technology |
 | :--- | :--- |
-| Language | Python 3.11 |
+| Language | Python 3.11+ |
 | MCP SDK | `mcp` (Anthropic official) |
 | HTTP | `httpx` (async) |
-| Auth | Firebase JWT (auto-managed) |
+| Retry | `tenacity` (exponential backoff) |
+| Auth | Firebase JWT (auto-managed with refresh) |
 | Video Quality | Up to 4K (2160p) |
+| Transport | stdio (local) / SSE (cloud) |
 
 ---
 
@@ -228,4 +279,10 @@ MIT
 
 ## Contributing
 
-PRs welcome. Please run `python test_server.py` before submitting.
+PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+Run tests before submitting:
+
+```bash
+python test_server.py
+```
