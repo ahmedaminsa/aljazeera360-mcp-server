@@ -122,6 +122,11 @@ class TokenManager:
         self._auth_token: Optional[str] = os.environ.get("AJ360_AUTH_TOKEN", "") or None
         self._refresh_token: Optional[str] = os.environ.get("AJ360_REFRESH_TOKEN", "") or None
         self._token_expiry: Optional[datetime] = None
+        
+        # Try loading persisted refresh token from disk (from previous rotation)
+        if not self._refresh_token:
+            self._refresh_token = self._load_persisted_refresh_token()
+        
         if self._auth_token:
             # Assume env token is fresh for 5 minutes
             self._token_expiry = datetime.now() + timedelta(minutes=5)
@@ -163,6 +168,7 @@ class TokenManager:
                     new_refresh = data.get("refreshToken")
                     if new_refresh:
                         self._refresh_token = new_refresh
+                        self._persist_refresh_token(new_refresh)
                     self._token_expiry = datetime.now() + timedelta(minutes=9)
                     logger.info("Successfully refreshed auth token")
                     return True
@@ -205,6 +211,38 @@ class TokenManager:
         self._auth_token = auth_token
         self._refresh_token = refresh_token
         self._token_expiry = datetime.now() + timedelta(minutes=9)
+        if refresh_token:
+            self._persist_refresh_token(refresh_token)
+    
+    @staticmethod
+    def _load_persisted_refresh_token() -> Optional[str]:
+        """Load a previously persisted refresh token from disk."""
+        try:
+            token_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".refresh_token")
+            if os.path.exists(token_path):
+                with open(token_path, "r") as f:
+                    token = f.read().strip()
+                if token:
+                    logger.info("Loaded persisted refresh token from disk")
+                    return token
+        except OSError:
+            pass
+        return None
+    
+    def _persist_refresh_token(self, token: str):
+        """Persist rotated refresh token to disk so it survives restarts.
+        
+        Writes to .refresh_token in the working directory. This file is
+        gitignored. If writing fails (e.g., read-only filesystem), the
+        server continues with the in-memory token.
+        """
+        try:
+            token_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".refresh_token")
+            with open(token_path, "w") as f:
+                f.write(token)
+            logger.debug("Persisted rotated refresh token to disk")
+        except OSError:
+            pass  # Read-only filesystem (e.g., Docker), skip silently
 
 
 # ============================================================================
@@ -944,7 +982,7 @@ def main():
     if transport == "sse":
         port = int(os.environ.get("MCP_PORT", "8080"))
         logger.info(f"Starting Al Jazeera 360 MCP Server (SSE transport on port {port})")
-        mcp.run(transport="sse", sse_params={"host": "0.0.0.0", "port": port})
+        mcp.run(transport="sse", host="0.0.0.0", port=port)
     else:
         logger.info("Starting Al Jazeera 360 MCP Server (stdio transport)")
         mcp.run(transport="stdio")

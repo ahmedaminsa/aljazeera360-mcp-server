@@ -8,17 +8,17 @@ Thank you for your interest in contributing! Here's how to get started.
 git clone https://github.com/ahmedaminsa/aljazeera360-mcp-server.git
 cd aljazeera360-mcp-server
 pip install -r requirements.txt
+pip install -e ".[dev]"  # installs pytest for development
 ```
 
 ## Running Tests
 
 ```bash
-# Live API tests (requires internet)
+# Integration tests against live API (requires internet + valid token)
 python test_server.py
-
-# Unit tests with mocks
-pytest tests/
 ```
+
+All 8 tools are tested end-to-end against the production API. Set `AJ360_REFRESH_TOKEN` environment variable for authenticated access.
 
 ## Making Changes
 
