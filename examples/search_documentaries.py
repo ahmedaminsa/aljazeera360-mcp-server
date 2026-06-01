@@ -15,7 +15,7 @@ import os
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from server import AlJazeera360Client, token_manager
+from server import AlJazeera360Client, format_search_results
 
 
 async def main():
@@ -26,31 +26,26 @@ async def main():
     print(f"🔍 Searching Al Jazeera 360 for: {topic}")
     print("-" * 50)
     
-    results = await client.search(topic, content_type="VOD")
+    data = await client.search_content(topic)
     
-    if "error" in results:
-        print(f"❌ Error: {results['error']}")
+    if not data:
+        print("❌ Error: No response from API")
         return
     
-    cards = results.get("cardList", [])
-    print(f"📺 Found {len(cards)} results:\n")
+    results = format_search_results(data)
     
-    for i, card in enumerate(cards, 1):
-        title = card.get("title", "Unknown")
-        content_id = card.get("id", "")
-        duration = card.get("duration", "")
+    if not results:
+        print("❌ No results found")
+        return
+    
+    print(f"📺 Found {len(results)} results:\n")
+    
+    for i, item in enumerate(results, 1):
+        title = item.get("title", "Unknown")
+        content_type = item.get("type", "VOD")
+        watch_url = item.get("watch_url", "")
         
-        # Format duration
-        if duration:
-            mins = int(duration) // 60
-            secs = int(duration) % 60
-            duration_str = f" ({mins}:{secs:02d})"
-        else:
-            duration_str = ""
-        
-        watch_url = f"https://www.aljazeera360.com/video/{content_id}"
-        
-        print(f"  {i}. {title}{duration_str}")
+        print(f"  {i}. [{content_type}] {title}")
         print(f"     🔗 {watch_url}")
         print()
 

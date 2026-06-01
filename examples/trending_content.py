@@ -14,7 +14,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from server import AlJazeera360Client, token_manager
+from server import AlJazeera360Client, format_vod_item, format_series_item, PLATFORM_URL
 
 
 async def main():
@@ -25,8 +25,8 @@ async def main():
     
     data = await client.get_home_content()
     
-    if "error" in data:
-        print(f"❌ Error: {data['error']}")
+    if not data:
+        print("❌ Error: No response from API")
         return
     
     # Featured content (heroes)
@@ -49,13 +49,29 @@ async def main():
         print("-" * 40)
         for bucket in buckets:
             name = bucket.get("name", "Unknown")
-            items = bucket.get("contents", [])
+            bucket_type = bucket.get("type", "")
+            
+            # Skip user-specific buckets
+            if bucket_type in ("VOD_RESUME", "VOD_RECOMMENDATIONS"):
+                continue
+            
+            items = bucket.get("contentList", [])
+            if not items:
+                continue
+            
             print(f"\n  📁 {name} ({len(items)} items)")
             for item in items[:3]:  # Show first 3 per category
+                item_type = item.get("type", "VOD")
                 title = item.get("title", "Unknown")
-                content_id = item.get("id", "")
+                item_id = item.get("id", "")
+                
+                if item_type == "VOD":
+                    url = f"{PLATFORM_URL}/video/{item_id}"
+                else:
+                    url = f"{PLATFORM_URL}/series/{item_id}"
+                
                 print(f"     • {title}")
-                print(f"       🔗 https://www.aljazeera360.com/video/{content_id}")
+                print(f"       🔗 {url}")
 
 
 if __name__ == "__main__":
