@@ -30,3 +30,6 @@ Thumbs.db
 
 # Test outputs
 *.log
+
+# Analytics database
+analytics.db

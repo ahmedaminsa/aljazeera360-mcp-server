@@ -8,12 +8,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY server.py .
+COPY analytics.py .
 
-# Expose port for HTTP/SSE transport
-EXPOSE 8080
+# Expose ports: MCP server + Analytics dashboard
+EXPOSE 8080 9090
 
 # Default to HTTP transport for cloud deployment
 ENV MCP_TRANSPORT=sse
 ENV MCP_PORT=8080
+ENV AJ360_ENABLE_DASHBOARD=true
+ENV AJ360_DASHBOARD_PORT=9090
 
 CMD ["python", "server.py"]

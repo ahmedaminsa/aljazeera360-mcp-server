@@ -30,6 +30,9 @@ import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from mcp.server.fastmcp import FastMCP
 
+# Analytics & Request Tracking
+from analytics import tracker, track_request, start_dashboard, ENABLE_DASHBOARD, DASHBOARD_PORT
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("aljazeera360-mcp")
@@ -514,6 +517,7 @@ client = AlJazeera360Client()
 
 
 @mcp.tool()
+@track_request("get_trending_content")
 async def get_trending_content() -> str:
     """
     Get the trending and most-watched content on Al Jazeera 360 platform.
@@ -572,6 +576,7 @@ async def get_trending_content() -> str:
 
 
 @mcp.tool()
+@track_request("browse_section")
 async def browse_section(section_id: str) -> str:
     """
     Browse content in a specific section/channel on Al Jazeera 360.
@@ -640,6 +645,7 @@ async def browse_section(section_id: str) -> str:
 
 
 @mcp.tool()
+@track_request("get_video_details")
 async def get_video_details(video_id: int) -> str:
     """
     Get detailed information about a specific video on Al Jazeera 360.
@@ -692,6 +698,7 @@ async def get_video_details(video_id: int) -> str:
 
 
 @mcp.tool()
+@track_request("get_series_details")
 async def get_series_details(series_id: int) -> str:
     """
     Get detailed information about a series on Al Jazeera 360, including all seasons.
@@ -735,6 +742,7 @@ async def get_series_details(series_id: int) -> str:
 
 
 @mcp.tool()
+@track_request("get_season_episodes")
 async def get_season_episodes(season_id: int, max_episodes: int = 20) -> str:
     """
     Get all episodes in a specific season. Use get_series_details first to find season IDs.
@@ -783,6 +791,7 @@ async def get_season_episodes(season_id: int, max_episodes: int = 20) -> str:
 
 
 @mcp.tool()
+@track_request("search_videos")
 async def search_videos(query: str, content_type: Optional[str] = None, max_results: int = 20) -> str:
     """
     Search for videos, documentaries, and programs on Al Jazeera 360.
@@ -828,6 +837,7 @@ async def search_videos(query: str, content_type: Optional[str] = None, max_resu
 
 
 @mcp.tool()
+@track_request("list_sections")
 async def list_sections() -> str:
     """
     List all available sections and channels on Al Jazeera 360.
@@ -851,6 +861,7 @@ async def list_sections() -> str:
 
 
 @mcp.tool()
+@track_request("get_latest_episodes")
 async def get_latest_episodes(section_id: str = "AJA", count: int = 10) -> str:
     """
     Get the latest episodes from a specific section on Al Jazeera 360.
@@ -976,8 +987,16 @@ def main():
     Transport is determined by MCP_TRANSPORT env var:
     - "stdio" (default): For local MCP clients (Claude Desktop, Cursor, etc.)
     - "sse": For cloud deployment (Cloud Run, Render, Railway, etc.)
+    
+    Analytics dashboard runs on a separate port (default: 9090).
+    Disable with AJ360_ENABLE_DASHBOARD=false.
     """
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    
+    # Start analytics dashboard in background
+    if ENABLE_DASHBOARD:
+        start_dashboard(DASHBOARD_PORT)
+        logger.info(f"Analytics dashboard running at http://localhost:{DASHBOARD_PORT}")
     
     if transport == "sse":
         port = int(os.environ.get("MCP_PORT", "8080"))

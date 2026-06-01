@@ -157,6 +157,9 @@ This server uses the standard MCP protocol over `stdio`. It works with any MCP-c
 | `AJ360_API_KEY` | No | Built-in | Platform API key (public, from browser network requests). |
 | `MCP_TRANSPORT` | No | `stdio` | Transport mode: `stdio` (local) or `sse` (cloud). |
 | `MCP_PORT` | No | `8080` | Port for SSE transport (cloud deployment). |
+| `AJ360_ENABLE_DASHBOARD` | No | `true` | Enable/disable the analytics dashboard. |
+| `AJ360_DASHBOARD_PORT` | No | `9090` | Port for the analytics dashboard. |
+| `AJ360_ANALYTICS_DB` | No | `analytics.db` | Path to SQLite analytics database. |
 
 The server works **without any configuration** in guest mode. For full content access, provide a refresh token.
 
@@ -266,6 +269,70 @@ Calling `search_videos("غزة")` returns:
 
 ---
 
+## Analytics Dashboard
+
+The server includes a **built-in analytics dashboard** that tracks every request made by AI tools.
+
+### What It Tracks
+
+- Which AI tool made the request (Claude, ChatGPT, Cursor, etc.)
+- Which MCP tool was called (`search_videos`, `get_trending_content`, etc.)
+- When each request happened (timestamp)
+- How long each request took (response time in ms)
+- Whether it succeeded or failed
+- Top search terms (what users are asking about)
+- Daily/hourly activity patterns
+
+### Access the Dashboard
+
+The dashboard starts automatically on port `9090` when you run the server:
+
+```
+http://localhost:9090
+```
+
+For cloud deployments, expose port 9090 alongside the MCP port (8080).
+
+### API Endpoints
+
+| Endpoint | Returns |
+| :--- | :--- |
+| `GET /` | Interactive HTML dashboard (auto-refreshes every 10s) |
+| `GET /api/stats` | JSON summary: total requests, tools usage, top searches, daily breakdown |
+| `GET /api/recent` | JSON list of the 50 most recent requests with full details |
+| `GET /api/health` | Health check (`{"status": "ok"}`) |
+
+### Configuration
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `AJ360_ENABLE_DASHBOARD` | `true` | Set to `false` to disable the dashboard |
+| `AJ360_DASHBOARD_PORT` | `9090` | Port for the analytics HTTP server |
+| `AJ360_ANALYTICS_DB` | `analytics.db` | SQLite database file path |
+
+### Example Stats Output
+
+```json
+{
+  "total_requests": 1247,
+  "success_rate": "99.2%",
+  "tools_usage": [
+    {"tool": "search_videos", "calls": 523, "avg_response_ms": 340},
+    {"tool": "get_trending_content", "calls": 312, "avg_response_ms": 180}
+  ],
+  "clients": [
+    {"client": "claude-desktop", "requests": 890},
+    {"client": "cursor", "requests": 357}
+  ],
+  "top_searches": [
+    {"term": "\u063a\u0632\u0629", "count": 89},
+    {"term": "\u0641\u0644\u0633\u0637\u064a\u0646", "count": 67}
+  ]
+}
+```
+
+---
+
 ## Tech Stack
 
 | Component | Technology |
@@ -275,6 +342,7 @@ Calling `search_videos("غزة")` returns:
 | HTTP | `httpx` (async) |
 | Retry | `tenacity` (exponential backoff) |
 | Auth | Firebase JWT (auto-managed with refresh) |
+| Analytics | SQLite + built-in HTTP dashboard |
 | Video Quality | Up to 4K (2160p) |
 | Transport | stdio (local) / SSE (cloud) |
 
