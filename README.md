@@ -1,5 +1,10 @@
 # Al Jazeera 360 MCP Server
 
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![MCP Protocol](https://img.shields.io/badge/MCP-Compatible-purple.svg)](https://modelcontextprotocol.io)
+[![Smithery](https://smithery.ai/badge/aljazeera360-mcp)](https://smithery.ai/server/aljazeera360-mcp)
+
 > Connect any AI assistant to Al Jazeera 360's streaming catalog — search, browse, and retrieve Arabic video content with direct watch links.
 
 An MCP (Model Context Protocol) server that gives AI tools like Claude, ChatGPT, Gemini, and Cursor real-time access to [Al Jazeera 360](https://www.aljazeera360.com)'s full content library: documentaries, investigative programs, talk shows, podcasts, and original productions.
