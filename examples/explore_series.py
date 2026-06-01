@@ -14,7 +14,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from server import AlJazeera360Client, token_manager
+from server import AlJazeera360Client, format_search_results, format_duration, PLATFORM_URL
 
 
 async def main():
@@ -26,43 +26,45 @@ async def main():
     print("=" * 60)
     
     # Step 1: Search for the series
-    results = await client.search(series_name, content_type="SERIES")
+    data = await client.search_content(series_name)
     
-    if "error" in results:
-        print(f"❌ Error: {results['error']}")
+    if not data:
+        print("❌ Error: No response from API")
         return
     
-    cards = results.get("cardList", [])
-    series_card = None
+    results = format_search_results(data)
     
-    for card in cards:
-        if card.get("type") == "SERIES":
-            series_card = card
+    # Find a SERIES type result
+    series_item = None
+    for item in results:
+        if item.get("type") == "SERIES":
+            series_item = item
             break
     
-    if not series_card:
-        # Try without content_type filter
-        results = await client.search(series_name)
-        cards = results.get("cardList", [])
-        for card in cards:
-            if card.get("type") == "SERIES":
-                series_card = card
-                break
+    # If no SERIES found, show first result
+    if not series_item and results:
+        series_item = results[0]
     
-    if not series_card:
+    if not series_item:
         print(f"❌ Series '{series_name}' not found")
         return
     
-    series_id = series_card.get("id")
-    print(f"\n✅ Found: {series_card.get('title')}")
+    series_id = series_item.get("id")
+    print(f"\n✅ Found: {series_item.get('title')}")
+    print(f"   Type: {series_item.get('type')}")
     print(f"   ID: {series_id}")
     
-    # Step 2: Get series details
-    print(f"\n📺 Fetching series details...")
-    details = await client.get_series(series_id)
+    # Step 2: Get series details (only works for SERIES type)
+    if series_item.get("type") != "SERIES":
+        print(f"\n⚠️  Result is a {series_item.get('type')}, not a SERIES. Cannot fetch seasons.")
+        print(f"   🔗 {series_item.get('watch_url')}")
+        return
     
-    if "error" in details:
-        print(f"❌ Error: {details['error']}")
+    print(f"\n📺 Fetching series details...")
+    details = await client.get_series_details(int(series_id))
+    
+    if not details:
+        print("❌ Error: Could not fetch series details")
         return
     
     title = details.get("title", "Unknown")
@@ -77,29 +79,30 @@ async def main():
     print()
     
     for season in seasons:
-        s_title = season.get("title", "Unknown")
+        s_title = season.get("title", f"Season {season.get('seasonNumber', '?')}")
         s_id = season.get("id", "")
-        print(f"   • {s_title} (ID: {s_id})")
+        ep_count = season.get("episodeCount", "?")
+        print(f"   • {s_title} — {ep_count} episodes (ID: {s_id})")
     
     # Step 3: Get episodes from latest season
     if seasons:
         latest_season = seasons[-1]
         season_id = latest_season.get("id")
-        print(f"\n📋 Episodes from: {latest_season.get('title')}")
+        print(f"\n📋 Episodes from: {latest_season.get('title', 'Latest Season')}")
         print("-" * 40)
         
-        episodes = await client.get_season_episodes(season_id)
+        episodes_data = await client.get_season_episodes(int(season_id))
         
-        if "error" not in episodes:
-            ep_list = episodes.get("episodes", [])
+        if episodes_data:
+            ep_list = episodes_data.get("episodes", [])
             for i, ep in enumerate(ep_list, 1):
                 ep_title = ep.get("title", "Unknown")
                 ep_id = ep.get("id", "")
-                duration = ep.get("duration", 0)
-                mins = int(duration) // 60 if duration else 0
+                duration = ep.get("duration")
+                duration_str = format_duration(duration) if duration else "N/A"
                 
-                print(f"   {i:2d}. {ep_title} ({mins} min)")
-                print(f"       🔗 https://www.aljazeera360.com/video/{ep_id}")
+                print(f"   {i:2d}. {ep_title} ({duration_str})")
+                print(f"       🔗 {PLATFORM_URL}/video/{ep_id}")
 
 
 if __name__ == "__main__":
