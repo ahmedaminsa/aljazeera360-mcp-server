@@ -31,7 +31,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from mcp.server.fastmcp import FastMCP
 
 # Analytics & Request Tracking
-from analytics import tracker, track_request, start_dashboard, ENABLE_DASHBOARD, DASHBOARD_PORT
+from analytics import tracker, track_request, start_dashboard, ENABLE_DASHBOARD, DASHBOARD_PORT, DASHBOARD_HTML
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -978,6 +978,48 @@ and list the latest season's episodes with watch links."""
 
 
 # ============================================================================
+# Custom Routes (Dashboard & Health — served on same port as MCP)
+# ============================================================================
+
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, JSONResponse
+
+
+@mcp.custom_route("/", methods=["GET"])
+async def dashboard_root(request: Request):
+    """Serve the Analytics Dashboard HTML at the root URL."""
+    return HTMLResponse(DASHBOARD_HTML)
+
+
+@mcp.custom_route("/dashboard", methods=["GET"])
+async def dashboard_page(request: Request):
+    """Serve the Analytics Dashboard HTML."""
+    return HTMLResponse(DASHBOARD_HTML)
+
+
+@mcp.custom_route("/api/stats", methods=["GET"])
+async def api_stats(request: Request):
+    """Return analytics stats as JSON."""
+    days = int(request.query_params.get("days", "7"))
+    stats = tracker.get_stats(days=days)
+    return JSONResponse(stats, headers={"Access-Control-Allow-Origin": "*"})
+
+
+@mcp.custom_route("/api/recent", methods=["GET"])
+async def api_recent(request: Request):
+    """Return recent requests as JSON."""
+    limit = int(request.query_params.get("limit", "50"))
+    recent = tracker.get_recent_requests(limit=limit)
+    return JSONResponse(recent, headers={"Access-Control-Allow-Origin": "*"})
+
+
+@mcp.custom_route("/api/health", methods=["GET"])
+async def api_health(request: Request):
+    """Health check endpoint for monitoring."""
+    return JSONResponse({"status": "ok", "server": "aljazeera360-mcp", "version": "1.0.0"})
+
+
+# ============================================================================
 # Entry Point
 # ============================================================================
 
@@ -988,19 +1030,28 @@ def main():
     - "stdio" (default): For local MCP clients (Claude Desktop, Cursor, etc.)
     - "sse": For cloud deployment (Cloud Run, Render, Railway, etc.)
     
-    Analytics dashboard runs on a separate port (default: 9090).
+    Analytics dashboard is served on the same port as the MCP server via custom routes:
+    - / and /dashboard → Analytics Dashboard HTML
+    - /api/stats → Stats JSON
+    - /api/recent → Recent requests JSON
+    - /api/health → Health check
+    - /sse → MCP SSE endpoint
+    
+    Optionally, a standalone dashboard can also run on a separate port (default: 9090).
     Disable with AJ360_ENABLE_DASHBOARD=false.
     """
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
     
-    # Start analytics dashboard in background
-    if ENABLE_DASHBOARD:
+    # Optionally start standalone analytics dashboard on separate port
+    if ENABLE_DASHBOARD and transport == "stdio":
         start_dashboard(DASHBOARD_PORT)
-        logger.info(f"Analytics dashboard running at http://localhost:{DASHBOARD_PORT}")
+        logger.info(f"Analytics dashboard also running at http://localhost:{DASHBOARD_PORT}")
     
     if transport == "sse":
         port = int(os.environ.get("MCP_PORT", "8080"))
         logger.info(f"Starting Al Jazeera 360 MCP Server (SSE transport on port {port})")
+        logger.info(f"Dashboard: http://0.0.0.0:{port}/")
+        logger.info(f"MCP SSE:   http://0.0.0.0:{port}/sse")
         mcp.settings.host = "0.0.0.0"
         mcp.settings.port = port
         mcp.run(transport="sse")
