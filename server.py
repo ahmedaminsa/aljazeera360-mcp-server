@@ -1927,6 +1927,784 @@ async def get_series_seo_map(series_id: int) -> str:
 
 
 # ============================================================================
+# Advanced Scientific & Practical Tools
+# ============================================================================
+
+@mcp.tool()
+async def build_knowledge_graph(sections: str = "AJA,AJD") -> str:
+    """Build a knowledge graph of entities (topics, countries, people) from content titles.
+    
+    Extracts named entities from video titles across sections and builds
+    a network showing how topics, countries, and themes interconnect.
+    
+    Args:
+        sections: Comma-separated section IDs (default: AJA,AJD)
+    
+    Returns:
+        JSON with entity network, top entities, co-occurrence matrix, and insights
+    """
+    import re
+    from collections import defaultdict, Counter
+    
+    # Arabic stopwords to filter out
+    STOPWORDS = {
+        'في', 'من', 'إلى', 'على', 'عن', 'مع', 'هل', 'ما', 'لا', 'أن', 'كان',
+        'هذا', 'هذه', 'التي', 'الذي', 'كيف', 'لماذا', 'متى', 'أين', 'بين',
+        'بعد', 'قبل', 'حتى', 'أو', 'و', 'ف', 'ب', 'ل', 'ك', 'أكثر', 'أقل',
+        'كل', 'بعض', 'جميع', 'هو', 'هي', 'هم', 'نحن', 'أنا', 'أنت', 'عام',
+        'العام', 'الـ', 'يوم', 'أيام', 'سنة', 'سنوات', 'مليون', 'مليار',
+        'الجزيرة', '360', 'الجزيرة360'
+    }
+    
+    # High-value entity keywords (topics, countries, themes)
+    ENTITY_PATTERNS = [
+        # Countries & regions
+        r'(فلسطين|غزة|إسرائيل|لبنان|سوريا|العراق|إيران|اليمن|السودان|ليبيا|مصر|تونس|المغرب|الجزائر|تركيا|روسيا|أمريكا|الصين|أوروبا|أفريقيا|الخليج|السعودية)',
+        # Political entities
+        r'(حماس|حزب الله|الناتو|الأمم المتحدة|مجلس الأمن|الاتحاد الأوروبي|البنك الدولي)',
+        # Themes
+        r'(الحرب|السلام|الانتخابات|الاقتصاد|المناخ|التكنولوجيا|الذكاء الاصطناعي|الهجرة|اللاجئين|الطاقة|النفط|الغاز)',
+    ]
+    
+    try:
+        section_list = [s.strip() for s in sections.split(',') if s.strip()]
+        all_titles = []
+        all_items = []
+        
+        for section_id in section_list:
+            try:
+                data = await client.get_section_content(section_id, items_per_bucket=20)
+                if isinstance(data, dict):
+                    for bucket in data.get('buckets', []):
+                        if isinstance(bucket, dict):
+                            for item in bucket.get('contentList', []):
+                                if isinstance(item, dict) and item.get('title'):
+                                    all_titles.append(item['title'])
+                                    all_items.append({
+                                        'id': item.get('id'),
+                                        'title': item['title'],
+                                        'section': section_id
+                                    })
+            except Exception:
+                continue
+        
+        if not all_titles:
+            return json.dumps({'error': 'No content found'}, ensure_ascii=False)
+        
+        # Extract entities from titles
+        entity_counter = Counter()
+        entity_items = defaultdict(list)  # entity -> list of video titles
+        co_occurrence = defaultdict(Counter)  # entity -> {other_entity: count}
+        
+        for item in all_items:
+            title = item['title']
+            found_entities = set()
+            
+            # Pattern-based entity extraction
+            for pattern in ENTITY_PATTERNS:
+                matches = re.findall(pattern, title)
+                found_entities.update(matches)
+            
+            # Word-level extraction (words > 3 chars, not stopwords)
+            words = re.findall(r'[\u0600-\u06FF]{4,}', title)
+            for word in words:
+                if word not in STOPWORDS and not any(word in e for e in found_entities):
+                    found_entities.add(word)
+            
+            for entity in found_entities:
+                entity_counter[entity] += 1
+                entity_items[entity].append(item['title'][:50])
+            
+            # Co-occurrence
+            entity_list = list(found_entities)
+            for i, e1 in enumerate(entity_list):
+                for e2 in entity_list[i+1:]:
+                    co_occurrence[e1][e2] += 1
+                    co_occurrence[e2][e1] += 1
+        
+        # Top entities
+        top_entities = [
+            {
+                'entity': entity,
+                'count': count,
+                'percentage': round(count / len(all_titles) * 100, 1),
+                'sample_titles': entity_items[entity][:3],
+                'related_entities': [
+                    {'entity': k, 'co_occurrences': v}
+                    for k, v in sorted(co_occurrence[entity].items(), key=lambda x: -x[1])[:5]
+                ]
+            }
+            for entity, count in entity_counter.most_common(20)
+        ]
+        
+        # Topic clusters (entities that frequently co-occur)
+        clusters = []
+        processed = set()
+        for entity, count in entity_counter.most_common(10):
+            if entity in processed:
+                continue
+            related = [k for k, v in co_occurrence[entity].items() if v >= 2]
+            if related:
+                clusters.append({
+                    'core_topic': entity,
+                    'related_topics': related[:5],
+                    'total_videos': count
+                })
+                processed.add(entity)
+                processed.update(related[:3])
+        
+        result = {
+            'summary': {
+                'total_videos_analyzed': len(all_titles),
+                'unique_entities_found': len(entity_counter),
+                'sections_analyzed': section_list,
+            },
+            'top_entities': top_entities,
+            'topic_clusters': clusters,
+            'insights': [
+                f"أكثر موضوع تكراراً: {entity_counter.most_common(1)[0][0]} ({entity_counter.most_common(1)[0][1]} فيديو)" if entity_counter else "لا توجد بيانات كافية",
+                f"إجمالي الكيانات المكتشفة: {len(entity_counter)} موضوع/كيان فريد",
+                f"إجمالي الفيديوهات المحللة: {len(all_titles)} فيديو",
+            ]
+        }
+        
+        logger.info(f"Built knowledge graph: {len(entity_counter)} entities from {len(all_titles)} videos")
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        logger.error(f"Error building knowledge graph: {e}")
+        return json.dumps({'error': str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def generate_faq_schema(video_id: int) -> str:
+    """Generate FAQ Schema (JSON-LD) for a video to improve AI discoverability.
+    
+    Creates structured FAQ data based on video title and description.
+    FAQ Schema helps content appear in AI answers (ChatGPT, Gemini, Perplexity)
+    and Google's People Also Ask section.
+    
+    Args:
+        video_id: The video ID to generate FAQ schema for
+    
+    Returns:
+        JSON with FAQ questions/answers and ready-to-use JSON-LD schema
+    """
+    try:
+        vod_data = await client.get_vod_details(video_id)
+        if not isinstance(vod_data, dict):
+            return json.dumps({'error': 'Video not found'}, ensure_ascii=False)
+        
+        title = vod_data.get('title', '')
+        description = vod_data.get('description', '')
+        duration_secs = vod_data.get('duration', 0)
+        duration_mins = round(duration_secs / 60) if duration_secs else 0
+        max_height = vod_data.get('maxHeight', 0)
+        quality = '4K Ultra HD' if max_height >= 2160 else ('Full HD' if max_height >= 1080 else 'HD')
+        
+        categories = []
+        raw_cats = vod_data.get('categories', [])
+        for c in raw_cats:
+            if isinstance(c, dict):
+                categories.append(c.get('name', ''))
+            elif isinstance(c, str):
+                categories.append(c)
+        
+        # Generate contextual FAQ questions based on content
+        faqs = []
+        
+        # Q1: What is this about?
+        faqs.append({
+            'question': f'ما موضوع {title}؟',
+            'answer': description if description else f'{title} — محتوى حصري على الجزيرة 360 بجودة {quality}.'
+        })
+        
+        # Q2: Duration
+        if duration_mins > 0:
+            faqs.append({
+                'question': f'كم مدة {title}؟',
+                'answer': f'مدة {title} هي {duration_mins} دقيقة، متاح للمشاهدة بجودة {quality} على منصة الجزيرة 360.'
+            })
+        
+        # Q3: Where to watch
+        faqs.append({
+            'question': f'أين يمكن مشاهدة {title}؟',
+            'answer': f'يمكن مشاهدة {title} على منصة الجزيرة 360 (aljazeera360.com) بجودة {quality} مجاناً.'
+        })
+        
+        # Q4: Category-based question
+        if categories:
+            cat_str = ' و'.join(categories[:2])
+            faqs.append({
+                'question': f'هل {title} متعلق بـ{cat_str}؟',
+                'answer': f'نعم، {title} يندرج ضمن تصنيف {cat_str} على منصة الجزيرة 360.'
+            })
+        
+        # Q5: Quality
+        faqs.append({
+            'question': f'ما جودة {title} على الجزيرة 360؟',
+            'answer': f'يتوفر {title} بجودة {quality} على منصة الجزيرة 360، مما يوفر تجربة مشاهدة استثنائية.'
+        })
+        
+        # Build JSON-LD
+        faq_schema = {
+            '@context': 'https://schema.org',
+            '@type': 'FAQPage',
+            'mainEntity': [
+                {
+                    '@type': 'Question',
+                    'name': faq['question'],
+                    'acceptedAnswer': {
+                        '@type': 'Answer',
+                        'text': faq['answer']
+                    }
+                }
+                for faq in faqs
+            ]
+        }
+        
+        result = {
+            'video_id': video_id,
+            'title': title,
+            'faqs': faqs,
+            'faq_count': len(faqs),
+            'schema_jsonld': faq_schema,
+            'schema_html': f'<script type="application/ld+json">\n{json.dumps(faq_schema, ensure_ascii=False, indent=2)}\n</script>',
+            'usage_tips': [
+                'أضف هذا الـ Schema في <head> صفحة الفيديو',
+                'يساعد على الظهور في People Also Ask في Google',
+                'يزيد احتمال ذكر المحتوى في إجابات ChatGPT و Gemini',
+                'لا يحتاج أي تعديل — جاهز للنشر مباشرة'
+            ]
+        }
+        
+        logger.info(f"Generated FAQ schema for video {video_id}: {len(faqs)} questions")
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        logger.error(f"Error generating FAQ schema: {e}")
+        return json.dumps({'error': str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def get_ai_discoverability_score(section_id: str = "AJA", max_items: int = 50) -> str:
+    """Calculate AI Discoverability Score for content (0-100).
+    
+    Measures how well each video can be discovered and cited by AI systems
+    (ChatGPT, Gemini, Perplexity, Claude) based on metadata completeness,
+    content quality signals, and SEO readiness.
+    
+    Scoring criteria:
+    - Title quality (length, keywords): 20 pts
+    - Description completeness: 25 pts  
+    - Video quality (4K/HD): 15 pts
+    - Access level (free vs premium): 20 pts
+    - Thumbnail availability: 10 pts
+    - Duration (optimal 5-30 min): 10 pts
+    
+    Args:
+        section_id: Section to analyze (default: AJA)
+        max_items: Maximum items to score (default: 50)
+    
+    Returns:
+        JSON with scores, distribution, top/bottom performers, and recommendations
+    """
+    from collections import Counter
+    try:
+        data = await client.get_section_content(section_id, items_per_bucket=10)
+        
+        items = []
+        if isinstance(data, dict):
+            for bucket in data.get('buckets', []):
+                if isinstance(bucket, dict):
+                    items.extend(bucket.get('contentList', []))
+        
+        if not items:
+            return json.dumps({'error': f'No content found in section {section_id}'}, ensure_ascii=False)
+        
+        scored_items = []
+        
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            
+            score = 0
+            breakdown = {}
+            recommendations = []
+            
+            title = item.get('title', '')
+            description = item.get('description', '')
+            thumbnail = item.get('thumbnailUrl', '')
+            max_height = item.get('maxHeight', 0)
+            access_level = item.get('accessLevel', '')
+            duration = item.get('duration', 0)
+            duration_mins = duration / 60 if duration else 0
+            
+            # 1. Title quality (20 pts)
+            title_len = len(title)
+            if title_len >= 30:
+                title_score = 20
+            elif title_len >= 20:
+                title_score = 15
+            elif title_len >= 10:
+                title_score = 10
+            else:
+                title_score = 5
+                recommendations.append('عنوان قصير جداً — أضف كلمات وصفية')
+            
+            # Bonus for question-style titles (great for AI)
+            if any(q in title for q in ['؟', 'كيف', 'لماذا', 'ما', 'هل', 'من', 'أين', 'متى']):
+                title_score = min(20, title_score + 3)
+            
+            score += title_score
+            breakdown['title'] = title_score
+            
+            # 2. Description completeness (25 pts)
+            desc_len = len(description)
+            if desc_len >= 150:
+                desc_score = 25
+            elif desc_len >= 80:
+                desc_score = 18
+            elif desc_len >= 30:
+                desc_score = 10
+            elif desc_len > 0:
+                desc_score = 5
+                recommendations.append('وصف قصير — أضف تفاصيل أكثر (150+ حرف)')
+            else:
+                desc_score = 0
+                recommendations.append('لا يوجد وصف — أضف وصفاً وصفياً كاملاً')
+            
+            score += desc_score
+            breakdown['description'] = desc_score
+            
+            # 3. Video quality (15 pts)
+            if max_height >= 2160:
+                quality_score = 15
+                quality_label = '4K'
+            elif max_height >= 1080:
+                quality_score = 12
+                quality_label = 'FHD'
+            elif max_height >= 720:
+                quality_score = 8
+                quality_label = 'HD'
+            else:
+                quality_score = 4
+                quality_label = 'SD'
+                recommendations.append('جودة منخفضة — الفيديوهات 4K/FHD أفضل للـ SEO')
+            
+            score += quality_score
+            breakdown['quality'] = quality_score
+            
+            # 4. Access level (20 pts)
+            if access_level == 'GRANTED':
+                access_score = 20
+            elif access_level == 'PREVIEW':
+                access_score = 10
+                recommendations.append('محتوى مقيّد — المحتوى المجاني أكثر قابلية للاكتشاف')
+            else:
+                access_score = 5
+                recommendations.append('محتوى مقيّد — المحتوى المجاني أكثر قابلية للاكتشاف')
+            
+            score += access_score
+            breakdown['access_level'] = access_score
+            
+            # 5. Thumbnail (10 pts)
+            if thumbnail and thumbnail.startswith('http'):
+                thumb_score = 10
+            else:
+                thumb_score = 0
+                recommendations.append('لا توجد صورة مصغرة — أضف thumbnail')
+            
+            score += thumb_score
+            breakdown['thumbnail'] = thumb_score
+            
+            # 6. Duration (10 pts) — optimal 5-30 mins for AI citation
+            if 5 <= duration_mins <= 30:
+                dur_score = 10
+            elif 2 <= duration_mins < 5 or 30 < duration_mins <= 60:
+                dur_score = 7
+            elif duration_mins > 0:
+                dur_score = 4
+            else:
+                dur_score = 0
+            
+            score += dur_score
+            breakdown['duration'] = dur_score
+            
+            # Grade
+            if score >= 85:
+                grade = 'A'
+            elif score >= 70:
+                grade = 'B'
+            elif score >= 55:
+                grade = 'C'
+            elif score >= 40:
+                grade = 'D'
+            else:
+                grade = 'F'
+            
+            scored_items.append({
+                'id': item.get('id'),
+                'title': title,
+                'score': score,
+                'grade': grade,
+                'breakdown': breakdown,
+                'recommendations': recommendations,
+                'quality': quality_label if 'quality_label' in dir() else 'Unknown',
+                'access': access_level,
+                'duration_mins': round(duration_mins, 1)
+            })
+        
+        if not scored_items:
+            return json.dumps({'error': 'No items scored'}, ensure_ascii=False)
+        
+        # Statistics
+        scores = [i['score'] for i in scored_items]
+        avg_score = round(sum(scores) / len(scores), 1)
+        
+        grade_dist = Counter(i['grade'] for i in scored_items)
+        
+        # Sort by score
+        scored_items.sort(key=lambda x: -x['score'])
+        
+        result = {
+            'summary': {
+                'section': section_id,
+                'total_analyzed': len(scored_items),
+                'average_score': avg_score,
+                'average_grade': 'A' if avg_score >= 85 else ('B' if avg_score >= 70 else ('C' if avg_score >= 55 else ('D' if avg_score >= 40 else 'F'))),
+                'grade_distribution': dict(grade_dist),
+                'score_range': {'min': min(scores), 'max': max(scores)}
+            },
+            'top_performers': scored_items[:5],
+            'needs_improvement': [i for i in scored_items if i['grade'] in ['D', 'F']][:10],
+            'all_scores': scored_items,
+            'section_insights': [
+                f"متوسط نقاط قابلية الاكتشاف: {avg_score}/100",
+                f"نسبة المحتوى ممتاز (A/B): {round((grade_dist.get('A',0)+grade_dist.get('B',0))/len(scored_items)*100, 1)}%",
+                f"نسبة المحتوى يحتاج تحسين (D/F): {round((grade_dist.get('D',0)+grade_dist.get('F',0))/len(scored_items)*100, 1)}%",
+                f"أعلى نقاط: {max(scores)} | أقل نقاط: {min(scores)}"
+            ]
+        }
+        
+        logger.info(f"AI Discoverability Score for {section_id}: avg={avg_score}, n={len(scored_items)}")
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        logger.error(f"Error calculating discoverability score: {e}")
+        return json.dumps({'error': str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def build_topic_clusters(sections: str = "AJA,AJD") -> str:
+    """Build SEO Topic Clusters (Pillar + Supporting content strategy).
+    
+    Analyzes content and groups it into topic clusters where each cluster has:
+    - A Pillar topic (most content, highest authority)
+    - Supporting content pieces around the pillar
+    - Internal linking recommendations
+    
+    This is the most powerful modern SEO strategy (2024-2026).
+    
+    Args:
+        sections: Comma-separated section IDs to analyze (default: AJA,AJD)
+    
+    Returns:
+        JSON with topic clusters, pillar pages, supporting content, and linking strategy
+    """
+    import re
+    from collections import defaultdict, Counter
+    
+    # Core topic seeds for clustering
+    TOPIC_SEEDS = {
+        'فلسطين وغزة': ['فلسطين', 'غزة', 'حماس', 'الضفة', 'القدس', 'أونروا', 'إسرائيل'],
+        'الحروب والنزاعات': ['حرب', 'معركة', 'نزاع', 'صراع', 'هجوم', 'قصف', 'اليمن', 'السودان', 'سوريا', 'ليبيا'],
+        'السياسة والانتخابات': ['انتخابات', 'رئيس', 'حكومة', 'برلمان', 'سياسة', 'ديمقراطية', 'دبلوماسية'],
+        'الاقتصاد والمال': ['اقتصاد', 'نفط', 'غاز', 'طاقة', 'تضخم', 'بنك', 'استثمار', 'تجارة'],
+        'التكنولوجيا والذكاء الاصطناعي': ['تكنولوجيا', 'ذكاء اصطناعي', 'رقمي', 'إنترنت', 'تقنية', 'ابتكار'],
+        'المناخ والبيئة': ['مناخ', 'بيئة', 'احترار', 'تلوث', 'طاقة متجددة', 'كوارث'],
+        'الرياضة': ['كرة', 'رياضة', 'بطولة', 'كأس', 'أولمبياد', 'لاعب', 'فريق'],
+        'التاريخ والحضارة': ['تاريخ', 'حضارة', 'تراث', 'قديم', 'أثري', 'عصر', 'إمبراطورية'],
+        'المجتمع والثقافة': ['مجتمع', 'ثقافة', 'فن', 'موسيقى', 'سينما', 'أدب', 'شباب', 'مرأة'],
+        'الصحة والعلوم': ['صحة', 'طب', 'علوم', 'بحث', 'دراسة', 'مرض', 'علاج', 'وباء'],
+    }
+    
+    try:
+        section_list = [s.strip() for s in sections.split(',') if s.strip()]
+        all_items = []
+        
+        for section_id in section_list:
+            try:
+                data = await client.get_section_content(section_id, items_per_bucket=20)
+                if isinstance(data, dict):
+                    for bucket in data.get('buckets', []):
+                        if isinstance(bucket, dict):
+                            for item in bucket.get('contentList', []):
+                                if isinstance(item, dict) and item.get('title'):
+                                    all_items.append({
+                                        'id': item.get('id'),
+                                        'title': item['title'],
+                                        'description': item.get('description', ''),
+                                        'section': section_id,
+                                        'access': item.get('accessLevel', ''),
+                                        'quality': item.get('maxHeight', 0)
+                                    })
+            except Exception:
+                continue
+        
+        if not all_items:
+            return json.dumps({'error': 'No content found'}, ensure_ascii=False)
+        
+        # Assign items to clusters
+        clusters = defaultdict(list)
+        unassigned = []
+        
+        for item in all_items:
+            text = item['title'] + ' ' + item['description']
+            assigned = False
+            
+            for cluster_name, keywords in TOPIC_SEEDS.items():
+                if any(kw in text for kw in keywords):
+                    clusters[cluster_name].append(item)
+                    assigned = True
+                    break
+            
+            if not assigned:
+                unassigned.append(item)
+        
+        # Build cluster report
+        cluster_report = []
+        for cluster_name, cluster_items in sorted(clusters.items(), key=lambda x: -len(x[1])):
+            if not cluster_items:
+                continue
+            
+            # Find pillar (best item = longest description + free access)
+            def pillar_score(item):
+                s = len(item.get('description', ''))
+                if item.get('access') == 'GRANTED':
+                    s += 100
+                if item.get('quality', 0) >= 2160:
+                    s += 50
+                return s
+            
+            pillar = max(cluster_items, key=pillar_score)
+            supporting = [i for i in cluster_items if i['id'] != pillar['id']]
+            
+            cluster_report.append({
+                'cluster': cluster_name,
+                'total_pieces': len(cluster_items),
+                'pillar_content': {
+                    'id': pillar['id'],
+                    'title': pillar['title'],
+                    'suggested_url': f"/topic/{cluster_name.replace(' ', '-')}",
+                    'suggested_meta_title': f"{cluster_name} — الجزيرة 360",
+                    'role': 'Pillar Page — المحتوى الرئيسي للموضوع'
+                },
+                'supporting_content': [
+                    {
+                        'id': i['id'],
+                        'title': i['title'],
+                        'link_anchor': i['title'][:30],
+                        'role': 'Supporting Content'
+                    }
+                    for i in supporting[:8]
+                ],
+                'internal_links': [
+                    f"اربط '{s['title'][:30]}' بـ Pillar Page '{pillar['title'][:30]}'"
+                    for s in supporting[:5]
+                ],
+                'seo_strength': 'قوي' if len(cluster_items) >= 5 else ('متوسط' if len(cluster_items) >= 3 else 'ضعيف')
+            })
+        
+        result = {
+            'summary': {
+                'total_items_analyzed': len(all_items),
+                'items_in_clusters': sum(len(v) for v in clusters.values()),
+                'items_unassigned': len(unassigned),
+                'total_clusters': len(cluster_report),
+                'strong_clusters': len([c for c in cluster_report if c['seo_strength'] == 'قوي']),
+            },
+            'clusters': cluster_report,
+            'unassigned_content': [{'id': i['id'], 'title': i['title']} for i in unassigned[:10]],
+            'strategy_recommendations': [
+                'ابنِ Pillar Page لكل cluster قوي (5+ فيديوهات)',
+                'أضف روابط داخلية من كل Supporting Content للـ Pillar Page',
+                'المحتوى غير المصنّف يحتاج تصنيف أو تحسين العنوان',
+                f"أقوى cluster: {cluster_report[0]['cluster']} ({cluster_report[0]['total_pieces']} فيديو)" if cluster_report else ''
+            ]
+        }
+        
+        logger.info(f"Built topic clusters: {len(cluster_report)} clusters from {len(all_items)} items")
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        logger.error(f"Error building topic clusters: {e}")
+        return json.dumps({'error': str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def find_evergreen_content(sections: str = "AJA,AJD") -> str:
+    """Identify evergreen content (timeless value) vs time-sensitive news content.
+    
+    Evergreen content has lasting SEO value and should be prioritized for:
+    - Schema markup investment
+    - Internal linking
+    - Meta description optimization
+    - Featured snippet targeting
+    
+    Args:
+        sections: Comma-separated section IDs (default: AJA,AJD)
+    
+    Returns:
+        JSON with evergreen/news classification, SEO priority scores, and recommendations
+    """
+    import re
+    
+    # News/time-sensitive indicators
+    NEWS_KEYWORDS = [
+        'اليوم', 'أمس', 'الآن', 'عاجل', 'خبر', 'أخبار', 'تقرير', 'بيان',
+        '2024', '2025', '2026', 'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو',
+        'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر',
+        'الأسبوع', 'الشهر', 'انتخابات', 'قمة', 'مؤتمر', 'اجتماع'
+    ]
+    
+    # Evergreen indicators
+    EVERGREEN_KEYWORDS = [
+        'تاريخ', 'حضارة', 'تراث', 'كيف', 'لماذا', 'ما هو', 'ما هي',
+        'دليل', 'شرح', 'تعلم', 'أساسيات', 'مقدمة', 'وثائقي', 'قصة',
+        'رحلة', 'اكتشاف', 'علوم', 'طبيعة', 'حياة', 'إنسان', 'فلسفة',
+        'فن', 'موسيقى', 'أدب', 'ثقافة', 'تقاليد', 'عادات'
+    ]
+    
+    try:
+        section_list = [s.strip() for s in sections.split(',') if s.strip()]
+        all_items = []
+        
+        for section_id in section_list:
+            try:
+                data = await client.get_section_content(section_id, items_per_bucket=20)
+                if isinstance(data, dict):
+                    for bucket in data.get('buckets', []):
+                        if isinstance(bucket, dict):
+                            for item in bucket.get('contentList', []):
+                                if isinstance(item, dict) and item.get('title'):
+                                    all_items.append({
+                                        'id': item.get('id'),
+                                        'title': item['title'],
+                                        'description': item.get('description', ''),
+                                        'section': section_id,
+                                        'access': item.get('accessLevel', ''),
+                                        'quality': item.get('maxHeight', 0),
+                                        'duration': item.get('duration', 0)
+                                    })
+            except Exception:
+                continue
+        
+        if not all_items:
+            return json.dumps({'error': 'No content found'}, ensure_ascii=False)
+        
+        evergreen = []
+        news_content = []
+        mixed = []
+        
+        for item in all_items:
+            text = item['title'] + ' ' + item['description']
+            
+            news_score = sum(1 for kw in NEWS_KEYWORDS if kw in text)
+            evergreen_score = sum(1 for kw in EVERGREEN_KEYWORDS if kw in text)
+            
+            # Calculate SEO priority score
+            seo_priority = 0
+            
+            # Evergreen gets higher base priority
+            if evergreen_score > news_score:
+                content_type = 'evergreen'
+                seo_priority += 40
+            elif news_score > evergreen_score:
+                content_type = 'news'
+                seo_priority += 10
+            else:
+                content_type = 'mixed'
+                seo_priority += 25
+            
+            # Quality bonus
+            if item['quality'] >= 2160:
+                seo_priority += 20
+            elif item['quality'] >= 1080:
+                seo_priority += 15
+            
+            # Free access bonus
+            if item['access'] == 'GRANTED':
+                seo_priority += 20
+            
+            # Description bonus
+            if len(item['description']) >= 100:
+                seo_priority += 10
+            
+            # Duration bonus (5-30 mins is optimal)
+            dur_mins = item['duration'] / 60 if item['duration'] else 0
+            if 5 <= dur_mins <= 30:
+                seo_priority += 10
+            
+            item_result = {
+                'id': item['id'],
+                'title': item['title'],
+                'content_type': content_type,
+                'seo_priority_score': seo_priority,
+                'evergreen_signals': evergreen_score,
+                'news_signals': news_score,
+                'quality': f"{item['quality']}p" if item['quality'] else 'unknown',
+                'access': item['access'],
+                'action': (
+                    '🟢 أولوية عالية — استثمر في Schema + Internal Links + Meta'
+                    if content_type == 'evergreen' and seo_priority >= 60
+                    else '🟡 أولوية متوسطة — حسّن الـ metadata'
+                    if seo_priority >= 40
+                    else '🔴 أولوية منخفضة — محتوى إخباري عابر'
+                )
+            }
+            
+            if content_type == 'evergreen':
+                evergreen.append(item_result)
+            elif content_type == 'news':
+                news_content.append(item_result)
+            else:
+                mixed.append(item_result)
+        
+        # Sort by SEO priority
+        evergreen.sort(key=lambda x: -x['seo_priority_score'])
+        mixed.sort(key=lambda x: -x['seo_priority_score'])
+        
+        result = {
+            'summary': {
+                'total_analyzed': len(all_items),
+                'evergreen_count': len(evergreen),
+                'news_count': len(news_content),
+                'mixed_count': len(mixed),
+                'evergreen_percentage': round(len(evergreen) / len(all_items) * 100, 1),
+                'sections_analyzed': section_list
+            },
+            'top_evergreen_priorities': evergreen[:10],
+            'mixed_content': mixed[:5],
+            'news_content_sample': news_content[:5],
+            'seo_investment_guide': [
+                f"🟢 {len(evergreen)} محتوى دائم الخضرة — استثمر فيه أولاً",
+                f"🟡 {len(mixed)} محتوى مختلط — يستحق تحسين الـ metadata",
+                f"🔴 {len(news_content)} محتوى إخباري — أولوية منخفضة للـ SEO طويل المدى",
+                "ركّز الـ Schema markup والـ Internal Links على المحتوى الدائم أولاً",
+                "المحتوى الدائم يستمر في جلب الزيارات لسنوات بعد النشر"
+            ]
+        }
+        
+        logger.info(f"Evergreen analysis: {len(evergreen)} evergreen, {len(news_content)} news, {len(mixed)} mixed")
+        return json.dumps(result, ensure_ascii=False, indent=2)
+        
+    except Exception as e:
+        logger.error(f"Error finding evergreen content: {e}")
+        return json.dumps({'error': str(e)}, ensure_ascii=False)
+
+
+# ============================================================================
 # MCP Resources
 # ============================================================================
 
