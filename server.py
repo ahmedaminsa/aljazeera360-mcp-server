@@ -1073,6 +1073,237 @@ async def get_latest_episodes(section_id: str = "AJA", count: int = 10) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
+@mcp.tool()
+@track_request("generate_seo_content")
+async def generate_seo_content(video_id: int, language: str = "ar") -> str:
+    """
+    Generate AI-powered SEO content for a video on Al Jazeera 360.
+    
+    توليد محتوى SEO احترافي لفيديو على منصة الجزيرة 360 باستخدام الذكاء الاصطناعي.
+    
+    Generates:
+    - Optimized meta title (50-60 chars)
+    - Meta description (150-160 chars)
+    - Focus keywords (5-10 keywords)
+    - VideoObject JSON-LD schema markup
+    - Extended page description (200-300 words)
+    - Suggested tags
+    
+    Args:
+        video_id: The video ID (e.g., 953659)
+        language: Language for SEO content — "ar" (Arabic, default) or "en" (English)
+    """
+    try:
+        # Get video details from the API
+        vod = await client.get_vod_details(video_id)
+        
+        title = vod.get("title", "")
+        description = vod.get("description", "")
+        duration_sec = vod.get("duration", 0)
+        published_date = vod.get("publishedDate", "")
+        thumbnail_url = vod.get("thumbnailUrl", vod.get("coverUrl", ""))
+        categories = vod.get("categories", [])
+        max_height = vod.get("maxHeight", 0)
+        access_level = vod.get("accessLevel", "GRANTED")
+        episode_info = vod.get("episodeInformation", {})
+        
+        # Format duration as ISO 8601 for schema
+        hours = duration_sec // 3600
+        minutes = (duration_sec % 3600) // 60
+        seconds = duration_sec % 60
+        iso_duration = f"PT{hours}H{minutes}M{seconds}S" if hours > 0 else f"PT{minutes}M{seconds}S"
+        
+        # Build category names — categories can be strings or dicts
+        cat_names = []
+        for c in categories:
+            if isinstance(c, dict):
+                name = c.get("name", c.get("title", ""))
+                if name:
+                    cat_names.append(name)
+            elif isinstance(c, str) and c:
+                cat_names.append(c)
+        
+        # Build episode context
+        episode_context = ""
+        if episode_info:
+            ep_num = episode_info.get("episodeNumber", "")
+            season_num = episode_info.get("seasonNumber", "")
+            series_title = episode_info.get("seriesTitle", "")
+            if series_title:
+                episode_context = f"برنامج: {series_title}"
+                if season_num:
+                    episode_context += f" | الموسم {season_num}"
+                if ep_num:
+                    episode_context += f" | الحلقة {ep_num}"
+        
+        # Quality label
+        quality = "4K Ultra HD" if max_height >= 2160 else "Full HD" if max_height >= 1080 else "HD"
+        
+        # Build the prompt for AI
+        if language == "ar":
+            prompt = f"""أنت خبير SEO متخصص في المحتوى الإعلامي العربي. اكتب محتوى SEO احترافياً لهذا الفيديو على منصة الجزيرة 360.
+
+بيانات الفيديو:
+- العنوان: {title}
+- الوصف: {description}
+- التصنيفات: {', '.join(cat_names) if cat_names else 'غير محدد'}
+- المدة: {duration_sec // 60} دقيقة
+- الجودة: {quality}
+- تاريخ النشر: {published_date[:10] if published_date else 'غير محدد'}
+{f'- {episode_context}' if episode_context else ''}
+- رابط المشاهدة: {PLATFORM_URL}/video/{video_id}
+
+اكتب بالتنسيق التالي (JSON فقط، بدون أي نص خارجه):
+{{
+  "meta_title": "عنوان SEO محسّن (50-60 حرف، يتضمن الكلمة المفتاحية الرئيسية)",
+  "meta_description": "وصف SEO جذاب (150-160 حرف، يحتوي على call-to-action)",
+  "focus_keyword": "الكلمة المفتاحية الرئيسية",
+  "keywords": ["كلمة1", "كلمة2", "كلمة3", "كلمة4", "كلمة5", "كلمة6", "كلمة7"],
+  "extended_description": "وصف موسّع للصفحة (200-300 كلمة) يشرح المحتوى ويستهدف الكلمات المفتاحية الطويلة",
+  "suggested_tags": ["وسم1", "وسم2", "وسم3", "وسم4", "وسم5"],
+  "seo_score_notes": "ملاحظات مختصرة عن نقاط القوة والضعف في الـ SEO الحالي"
+}}"""
+        else:
+            prompt = f"""You are an SEO expert specializing in Arabic media content. Write professional SEO content for this Al Jazeera 360 video.
+
+Video Data:
+- Title: {title}
+- Description: {description}
+- Categories: {', '.join(cat_names) if cat_names else 'Not specified'}
+- Duration: {duration_sec // 60} minutes
+- Quality: {quality}
+- Published: {published_date[:10] if published_date else 'Not specified'}
+{f'- {episode_context}' if episode_context else ''}
+- Watch URL: {PLATFORM_URL}/video/{video_id}
+
+Write in the following JSON format only (no text outside JSON):
+{{
+  "meta_title": "Optimized SEO title (50-60 chars, includes main keyword)",
+  "meta_description": "Compelling meta description (150-160 chars, includes call-to-action)",
+  "focus_keyword": "Main focus keyword",
+  "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5", "keyword6", "keyword7"],
+  "extended_description": "Extended page description (200-300 words) explaining content and targeting long-tail keywords",
+  "suggested_tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
+  "seo_score_notes": "Brief notes on current SEO strengths and weaknesses"
+}}"""
+        
+        # Call OpenAI API
+        openai_key = os.environ.get("OPENAI_API_KEY", "")
+        openai_base = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
+        
+        if not openai_key:
+            # Return structured metadata without AI generation
+            return json.dumps({
+                "video_id": video_id,
+                "title": title,
+                "description": description,
+                "watch_url": f"{PLATFORM_URL}/video/{video_id}",
+                "thumbnail": thumbnail_url,
+                "duration_iso": iso_duration,
+                "published_date": published_date,
+                "categories": cat_names,
+                "quality": quality,
+                "error": "OPENAI_API_KEY not set — AI generation unavailable. Raw metadata returned.",
+                "schema_markup": {
+                    "@context": "https://schema.org",
+                    "@type": "VideoObject",
+                    "name": title,
+                    "description": description,
+                    "thumbnailUrl": thumbnail_url,
+                    "uploadDate": published_date[:10] if published_date else "",
+                    "duration": iso_duration,
+                    "contentUrl": f"{PLATFORM_URL}/video/{video_id}",
+                    "embedUrl": f"{PLATFORM_URL}/video/{video_id}",
+                    "publisher": {
+                        "@type": "Organization",
+                        "name": "الجزيرة 360",
+                        "url": PLATFORM_URL,
+                    },
+                }
+            }, ensure_ascii=False, indent=2)
+        
+        async with httpx.AsyncClient(timeout=60) as http:
+            resp = await http.post(
+                f"{openai_base}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {openai_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-4.1-mini",
+                    "messages": [
+                        {"role": "system", "content": "You are an expert SEO specialist for Arabic media. Always respond with valid JSON only."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.7,
+                    "response_format": {"type": "json_object"},
+                }
+            )
+            resp.raise_for_status()
+            ai_response = resp.json()
+            seo_content = json.loads(ai_response["choices"][0]["message"]["content"])
+        
+        # Build VideoObject JSON-LD schema
+        schema_markup = {
+            "@context": "https://schema.org",
+            "@type": "VideoObject",
+            "name": seo_content.get("meta_title", title),
+            "description": seo_content.get("meta_description", description),
+            "thumbnailUrl": thumbnail_url,
+            "uploadDate": published_date[:10] if published_date else "",
+            "duration": iso_duration,
+            "contentUrl": f"{PLATFORM_URL}/video/{video_id}",
+            "embedUrl": f"{PLATFORM_URL}/video/{video_id}",
+            "keywords": ", ".join(seo_content.get("keywords", [])),
+            "inLanguage": "ar",
+            "publisher": {
+                "@type": "Organization",
+                "name": "الجزيرة 360",
+                "url": PLATFORM_URL,
+                "logo": {
+                    "@type": "ImageObject",
+                    "url": "https://www.aljazeera360.com/favicon.ico"
+                }
+            },
+        }
+        
+        if cat_names:
+            schema_markup["genre"] = cat_names[0]
+        
+        # Final result
+        result = {
+            "video_id": video_id,
+            "original_title": title,
+            "watch_url": f"{PLATFORM_URL}/video/{video_id}",
+            "thumbnail": thumbnail_url,
+            "duration_iso": iso_duration,
+            "quality": quality,
+            "language": language,
+            # AI-generated SEO content
+            "seo": {
+                "meta_title": seo_content.get("meta_title", ""),
+                "meta_description": seo_content.get("meta_description", ""),
+                "focus_keyword": seo_content.get("focus_keyword", ""),
+                "keywords": seo_content.get("keywords", []),
+                "extended_description": seo_content.get("extended_description", ""),
+                "suggested_tags": seo_content.get("suggested_tags", []),
+                "seo_score_notes": seo_content.get("seo_score_notes", ""),
+                "meta_title_length": len(seo_content.get("meta_title", "")),
+                "meta_description_length": len(seo_content.get("meta_description", "")),
+            },
+            # Ready-to-use schema markup
+            "schema_markup": schema_markup,
+            "schema_markup_html": f'<script type="application/ld+json">\n{json.dumps(schema_markup, ensure_ascii=False, indent=2)}\n</script>',
+        }
+        
+        logger.info(f"Generated SEO content for video {video_id}: {title}")
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    
+    except Exception as e:
+        logger.error(f"Error generating SEO content for video {video_id}: {e}")
+        return json.dumps({"error": str(e), "video_id": video_id}, ensure_ascii=False)
+
+
 # ============================================================================
 # MCP Resources
 # ============================================================================
