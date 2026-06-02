@@ -16,7 +16,7 @@ async def test():
     print("Testing generate_seo_content for video 953659 (عدنان مندريس)...")
     print("=" * 60)
     
-    result = await generate_seo_content(953659, "ar")
+    result = await generate_seo_content(953659)
     
     import json
     data = json.loads(result)
@@ -45,7 +45,9 @@ async def test():
         print(f"  {seo.get('meta_description', 'N/A')}")
         print(f"\nFocus Keyword: {seo.get('focus_keyword', 'N/A')}")
         print(f"\nKeywords: {', '.join(seo.get('keywords', []))}")
-        print(f"\nSEO Notes: {seo.get('seo_score_notes', 'N/A')}")
+        print(f"\nAudit Notes:")
+        for note in seo.get('audit_notes', []):
+            print(f"  {note}")
         print(f"\nSchema type: {data.get('schema_markup', {}).get('@type', 'N/A')}")
         print("\n✅ Full SEO content generated successfully!")
 

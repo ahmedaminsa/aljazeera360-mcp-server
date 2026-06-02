@@ -1075,23 +1075,25 @@ async def get_latest_episodes(section_id: str = "AJA", count: int = 10) -> str:
 
 @mcp.tool()
 @track_request("generate_seo_content")
-async def generate_seo_content(video_id: int, language: str = "ar") -> str:
+async def generate_seo_content(video_id: int) -> str:
     """
-    Generate AI-powered SEO content for a video on Al Jazeera 360.
+    Generate complete SEO content for a video on Al Jazeera 360 — 100% free, no AI API needed.
     
-    توليد محتوى SEO احترافي لفيديو على منصة الجزيرة 360 باستخدام الذكاء الاصطناعي.
+    توليد محتوى SEO كامل ومجاني لأي فيديو على منصة الجزيرة 360.
+    يعمل بالكامل من بيانات الـ API العامة بدون أي تكلفة.
     
     Generates:
-    - Optimized meta title (50-60 chars)
-    - Meta description (150-160 chars)
-    - Focus keywords (5-10 keywords)
-    - VideoObject JSON-LD schema markup
-    - Extended page description (200-300 words)
+    - Optimized meta title (trimmed to 60 chars)
+    - Meta description (trimmed to 160 chars with CTA)
+    - Focus keyword extracted from title
+    - 7-10 keywords from title + categories + series
+    - VideoObject JSON-LD schema markup (ready to embed in HTML)
+    - Extended page description
     - Suggested tags
+    - SEO audit notes (what's good, what needs improvement)
     
     Args:
         video_id: The video ID (e.g., 953659)
-        language: Language for SEO content — "ar" (Arabic, default) or "en" (English)
     """
     try:
         # Get video details from the API
@@ -1099,21 +1101,28 @@ async def generate_seo_content(video_id: int, language: str = "ar") -> str:
         
         title = vod.get("title", "")
         description = vod.get("description", "")
+        long_description = vod.get("longDescription", description)
         duration_sec = vod.get("duration", 0)
         published_date = vod.get("publishedDate", "")
         thumbnail_url = vod.get("thumbnailUrl", vod.get("coverUrl", ""))
         categories = vod.get("categories", [])
         max_height = vod.get("maxHeight", 0)
-        access_level = vod.get("accessLevel", "GRANTED")
-        episode_info = vod.get("episodeInformation", {})
+        episode_info = vod.get("episodeInformation", {}) or {}
+        display_tags = vod.get("displayableTags", []) or []
+        release_year = vod.get("releaseYear", "")
         
-        # Format duration as ISO 8601 for schema
+        # ----------------------------------------------------------------
+        # 1. ISO 8601 duration for schema
+        # ----------------------------------------------------------------
         hours = duration_sec // 3600
-        minutes = (duration_sec % 3600) // 60
-        seconds = duration_sec % 60
-        iso_duration = f"PT{hours}H{minutes}M{seconds}S" if hours > 0 else f"PT{minutes}M{seconds}S"
+        mins = (duration_sec % 3600) // 60
+        secs = duration_sec % 60
+        iso_duration = f"PT{hours}H{mins}M{secs}S" if hours > 0 else f"PT{mins}M{secs}S"
+        duration_label = f"{hours}ساعة {mins}دقيقة" if hours > 0 else f"{mins} دقيقة"
         
-        # Build category names — categories can be strings or dicts
+        # ----------------------------------------------------------------
+        # 2. Category names (handle both string and dict formats)
+        # ----------------------------------------------------------------
         cat_names = []
         for c in categories:
             if isinstance(c, dict):
@@ -1123,138 +1132,175 @@ async def generate_seo_content(video_id: int, language: str = "ar") -> str:
             elif isinstance(c, str) and c:
                 cat_names.append(c)
         
-        # Build episode context
-        episode_context = ""
-        if episode_info:
-            ep_num = episode_info.get("episodeNumber", "")
-            season_num = episode_info.get("seasonNumber", "")
-            series_title = episode_info.get("seriesTitle", "")
-            if series_title:
-                episode_context = f"برنامج: {series_title}"
-                if season_num:
-                    episode_context += f" | الموسم {season_num}"
-                if ep_num:
-                    episode_context += f" | الحلقة {ep_num}"
+        # ----------------------------------------------------------------
+        # 3. Episode / series context
+        # ----------------------------------------------------------------
+        series_title = episode_info.get("seriesTitle", "")
+        season_num = episode_info.get("seasonNumber", "")
+        ep_num = episode_info.get("episodeNumber", "")
         
-        # Quality label
+        episode_label = ""
+        if series_title:
+            episode_label = series_title
+            if season_num:
+                episode_label += f" – الموسم {season_num}"
+            if ep_num:
+                episode_label += f" – الحلقة {ep_num}"
+        
+        # ----------------------------------------------------------------
+        # 4. Quality label
+        # ----------------------------------------------------------------
         quality = "4K Ultra HD" if max_height >= 2160 else "Full HD" if max_height >= 1080 else "HD"
         
-        # Build the prompt for AI
-        if language == "ar":
-            prompt = f"""أنت خبير SEO متخصص في المحتوى الإعلامي العربي. اكتب محتوى SEO احترافياً لهذا الفيديو على منصة الجزيرة 360.
-
-بيانات الفيديو:
-- العنوان: {title}
-- الوصف: {description}
-- التصنيفات: {', '.join(cat_names) if cat_names else 'غير محدد'}
-- المدة: {duration_sec // 60} دقيقة
-- الجودة: {quality}
-- تاريخ النشر: {published_date[:10] if published_date else 'غير محدد'}
-{f'- {episode_context}' if episode_context else ''}
-- رابط المشاهدة: {PLATFORM_URL}/video/{video_id}
-
-اكتب بالتنسيق التالي (JSON فقط، بدون أي نص خارجه):
-{{
-  "meta_title": "عنوان SEO محسّن (50-60 حرف، يتضمن الكلمة المفتاحية الرئيسية)",
-  "meta_description": "وصف SEO جذاب (150-160 حرف، يحتوي على call-to-action)",
-  "focus_keyword": "الكلمة المفتاحية الرئيسية",
-  "keywords": ["كلمة1", "كلمة2", "كلمة3", "كلمة4", "كلمة5", "كلمة6", "كلمة7"],
-  "extended_description": "وصف موسّع للصفحة (200-300 كلمة) يشرح المحتوى ويستهدف الكلمات المفتاحية الطويلة",
-  "suggested_tags": ["وسم1", "وسم2", "وسم3", "وسم4", "وسم5"],
-  "seo_score_notes": "ملاحظات مختصرة عن نقاط القوة والضعف في الـ SEO الحالي"
-}}"""
+        # ----------------------------------------------------------------
+        # 5. Build META TITLE (max 60 chars)
+        # Rule: "{title} | الجزيرة 360"
+        # If too long, trim title to fit
+        # ----------------------------------------------------------------
+        suffix = " | الجزيرة 360"
+        max_title_len = 60
+        if len(title) + len(suffix) <= max_title_len:
+            meta_title = title + suffix
         else:
-            prompt = f"""You are an SEO expert specializing in Arabic media content. Write professional SEO content for this Al Jazeera 360 video.
-
-Video Data:
-- Title: {title}
-- Description: {description}
-- Categories: {', '.join(cat_names) if cat_names else 'Not specified'}
-- Duration: {duration_sec // 60} minutes
-- Quality: {quality}
-- Published: {published_date[:10] if published_date else 'Not specified'}
-{f'- {episode_context}' if episode_context else ''}
-- Watch URL: {PLATFORM_URL}/video/{video_id}
-
-Write in the following JSON format only (no text outside JSON):
-{{
-  "meta_title": "Optimized SEO title (50-60 chars, includes main keyword)",
-  "meta_description": "Compelling meta description (150-160 chars, includes call-to-action)",
-  "focus_keyword": "Main focus keyword",
-  "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5", "keyword6", "keyword7"],
-  "extended_description": "Extended page description (200-300 words) explaining content and targeting long-tail keywords",
-  "suggested_tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
-  "seo_score_notes": "Brief notes on current SEO strengths and weaknesses"
-}}"""
+            trimmed = title[:max_title_len - len(suffix) - 1].rstrip()
+            # Try to cut at last space
+            last_space = trimmed.rfind(" ")
+            if last_space > 20:
+                trimmed = trimmed[:last_space]
+            meta_title = trimmed + "…" + suffix
         
-        # Call OpenAI API
-        openai_key = os.environ.get("OPENAI_API_KEY", "")
-        openai_base = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
+        # ----------------------------------------------------------------
+        # 6. Build META DESCRIPTION (max 160 chars)
+        # Rule: first sentence of description + quality + CTA
+        # ----------------------------------------------------------------
+        cta = " – شاهد الآن بجودة " + quality + " على الجزيرة 360."
+        desc_clean = description.strip().replace("\n", " ")
+        # Take first sentence
+        for sep in [". ", ".،", "\u060c"]:
+            if sep in desc_clean:
+                first_sentence = desc_clean.split(sep)[0] + "."
+                break
+        else:
+            first_sentence = desc_clean
         
-        if not openai_key:
-            # Return structured metadata without AI generation
-            return json.dumps({
-                "video_id": video_id,
-                "title": title,
-                "description": description,
-                "watch_url": f"{PLATFORM_URL}/video/{video_id}",
-                "thumbnail": thumbnail_url,
-                "duration_iso": iso_duration,
-                "published_date": published_date,
-                "categories": cat_names,
-                "quality": quality,
-                "error": "OPENAI_API_KEY not set — AI generation unavailable. Raw metadata returned.",
-                "schema_markup": {
-                    "@context": "https://schema.org",
-                    "@type": "VideoObject",
-                    "name": title,
-                    "description": description,
-                    "thumbnailUrl": thumbnail_url,
-                    "uploadDate": published_date[:10] if published_date else "",
-                    "duration": iso_duration,
-                    "contentUrl": f"{PLATFORM_URL}/video/{video_id}",
-                    "embedUrl": f"{PLATFORM_URL}/video/{video_id}",
-                    "publisher": {
-                        "@type": "Organization",
-                        "name": "الجزيرة 360",
-                        "url": PLATFORM_URL,
-                    },
-                }
-            }, ensure_ascii=False, indent=2)
+        max_desc = 160
+        if len(first_sentence) + len(cta) <= max_desc:
+            meta_description = first_sentence + cta
+        else:
+            available = max_desc - len(cta) - 1
+            meta_description = first_sentence[:available].rstrip() + "…" + cta
         
-        async with httpx.AsyncClient(timeout=60) as http:
-            resp = await http.post(
-                f"{openai_base}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {openai_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "gpt-4.1-mini",
-                    "messages": [
-                        {"role": "system", "content": "You are an expert SEO specialist for Arabic media. Always respond with valid JSON only."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.7,
-                    "response_format": {"type": "json_object"},
-                }
-            )
-            resp.raise_for_status()
-            ai_response = resp.json()
-            seo_content = json.loads(ai_response["choices"][0]["message"]["content"])
+        # ----------------------------------------------------------------
+        # 7. Keywords extraction (rule-based, no AI)
+        # Sources: title words + categories + series title + year
+        # ----------------------------------------------------------------
+        keywords = []
         
-        # Build VideoObject JSON-LD schema
+        # Primary: full title as main keyword
+        if title:
+            keywords.append(title)
+        
+        # Series title if exists
+        if series_title and series_title not in keywords:
+            keywords.append(series_title)
+        
+        # Categories
+        for cat in cat_names:
+            if cat not in keywords:
+                keywords.append(cat)
+        
+        # Displayable tags
+        for tag in display_tags[:5]:
+            tag_title = tag.get("title", "") if isinstance(tag, dict) else str(tag)
+            if tag_title and tag_title not in keywords:
+                keywords.append(tag_title)
+        
+        # Platform keyword
+        keywords.append("الجزيرة 360")
+        
+        # Year if available
+        if release_year:
+            keywords.append(str(release_year))
+        
+        # Deduplicate and limit to 10
+        seen = set()
+        unique_keywords = []
+        for kw in keywords:
+            if kw not in seen:
+                seen.add(kw)
+                unique_keywords.append(kw)
+        keywords = unique_keywords[:10]
+        
+        # Focus keyword = title (most specific)
+        focus_keyword = title
+        
+        # ----------------------------------------------------------------
+        # 8. Extended description for the page
+        # ----------------------------------------------------------------
+        parts = []
+        if long_description and long_description != description:
+            parts.append(long_description.strip())
+        elif description:
+            parts.append(description.strip())
+        
+        if episode_label:
+            parts.append(f"هذا المحتوى جزء من {episode_label}.")
+        
+        if cat_names:
+            parts.append(f"التصنيف: {' – '.join(cat_names)}.")
+        
+        parts.append(f"المدة: {duration_label}. الجودة: {quality}.")
+        parts.append(f"شاهد هذا المحتوى وغيره الكثير على منصة الجزيرة 360 – مشاهدة بلا قيود.")
+        extended_description = " ".join(parts)
+        
+        # ----------------------------------------------------------------
+        # 9. Suggested tags
+        # ----------------------------------------------------------------
+        suggested_tags = list(dict.fromkeys(
+            [title] + cat_names + ([series_title] if series_title else []) + ["الجزيرة 360", "وثائقي", "برامج عربية"]
+        ))[:8]
+        
+        # ----------------------------------------------------------------
+        # 10. SEO audit notes
+        # ----------------------------------------------------------------
+        audit_notes = []
+        if len(description) < 100:
+            audit_notes.append("⚠️ الوصف قصير (أقل من 100 حرف) — ينصح بتوسيعه")
+        else:
+            audit_notes.append("✅ الوصف كافي")
+        
+        if not cat_names:
+            audit_notes.append("⚠️ لا تصنيفات — أضف تصنيفات لتحسين الكلمات المفتاحية")
+        else:
+            audit_notes.append(f"✅ يحتوي على {len(cat_names)} تصنيفات")
+        
+        if thumbnail_url:
+            audit_notes.append("✅ صورة مصغرة متاحة للـ schema")
+        else:
+            audit_notes.append("⚠️ لا صورة مصغرة — مطلوبة لـ VideoObject schema")
+        
+        if published_date:
+            audit_notes.append("✅ تاريخ نشر متاح للـ schema")
+        
+        if max_height >= 2160:
+            audit_notes.append("✅ جودة 4K — ميزة تنافسية قوية")
+        
+        audit_notes.append("⚠️ الصفحة SPA (JavaScript) — الـ schema يجب حقنه في الـ HTML المرسل من السيرفر")
+        
+        # ----------------------------------------------------------------
+        # 11. VideoObject JSON-LD schema (ready to embed)
+        # ----------------------------------------------------------------
         schema_markup = {
             "@context": "https://schema.org",
             "@type": "VideoObject",
-            "name": seo_content.get("meta_title", title),
-            "description": seo_content.get("meta_description", description),
+            "name": meta_title.replace(suffix, "").strip(" …"),
+            "description": meta_description,
             "thumbnailUrl": thumbnail_url,
             "uploadDate": published_date[:10] if published_date else "",
             "duration": iso_duration,
             "contentUrl": f"{PLATFORM_URL}/video/{video_id}",
             "embedUrl": f"{PLATFORM_URL}/video/{video_id}",
-            "keywords": ", ".join(seo_content.get("keywords", [])),
+            "keywords": ", ".join(keywords),
             "inLanguage": "ar",
             "publisher": {
                 "@type": "Organization",
@@ -1266,11 +1312,19 @@ Write in the following JSON format only (no text outside JSON):
                 }
             },
         }
-        
         if cat_names:
             schema_markup["genre"] = cat_names[0]
+        if series_title:
+            schema_markup["partOfSeries"] = {
+                "@type": "TVSeries",
+                "name": series_title
+            }
         
-        # Final result
+        schema_html = f'<script type="application/ld+json">\n{json.dumps(schema_markup, ensure_ascii=False, indent=2)}\n</script>'
+        
+        # ----------------------------------------------------------------
+        # 12. Final result
+        # ----------------------------------------------------------------
         result = {
             "video_id": video_id,
             "original_title": title,
@@ -1278,25 +1332,23 @@ Write in the following JSON format only (no text outside JSON):
             "thumbnail": thumbnail_url,
             "duration_iso": iso_duration,
             "quality": quality,
-            "language": language,
-            # AI-generated SEO content
+            "generation_method": "rule-based (free, no AI API)",
             "seo": {
-                "meta_title": seo_content.get("meta_title", ""),
-                "meta_description": seo_content.get("meta_description", ""),
-                "focus_keyword": seo_content.get("focus_keyword", ""),
-                "keywords": seo_content.get("keywords", []),
-                "extended_description": seo_content.get("extended_description", ""),
-                "suggested_tags": seo_content.get("suggested_tags", []),
-                "seo_score_notes": seo_content.get("seo_score_notes", ""),
-                "meta_title_length": len(seo_content.get("meta_title", "")),
-                "meta_description_length": len(seo_content.get("meta_description", "")),
+                "meta_title": meta_title,
+                "meta_title_length": len(meta_title),
+                "meta_description": meta_description,
+                "meta_description_length": len(meta_description),
+                "focus_keyword": focus_keyword,
+                "keywords": keywords,
+                "extended_description": extended_description,
+                "suggested_tags": suggested_tags,
+                "audit_notes": audit_notes,
             },
-            # Ready-to-use schema markup
             "schema_markup": schema_markup,
-            "schema_markup_html": f'<script type="application/ld+json">\n{json.dumps(schema_markup, ensure_ascii=False, indent=2)}\n</script>',
+            "schema_markup_html": schema_html,
         }
         
-        logger.info(f"Generated SEO content for video {video_id}: {title}")
+        logger.info(f"Generated SEO content (rule-based) for video {video_id}: {title}")
         return json.dumps(result, ensure_ascii=False, indent=2)
     
     except Exception as e:
