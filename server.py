@@ -1031,7 +1031,13 @@ async def api_recent(request: Request):
 @mcp.custom_route("/api/health", methods=["GET"])
 async def api_health(request: Request):
     """Health check endpoint for monitoring."""
-    return JSONResponse({"status": "ok", "server": "aljazeera360-mcp", "version": "1.0.0"})
+    return JSONResponse({
+        "status": "ok",
+        "server": "aljazeera360-mcp",
+        "version": "1.1.0",
+        "transport": _transport_mode,
+        "dns_protection": mcp.settings.transport_security.enable_dns_rebinding_protection if mcp.settings.transport_security else None,
+    })
 
 
 # ============================================================================
