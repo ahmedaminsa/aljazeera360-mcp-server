@@ -1357,6 +1357,576 @@ async def generate_seo_content(video_id: int) -> str:
 
 
 # ============================================================================
+# SEO & Analytics Tools
+# ============================================================================
+
+@mcp.tool()
+@track_request("generate_sitemap")
+async def generate_sitemap(sections: str = "all", max_per_section: int = 100) -> str:
+    """
+    Generate a complete Video Sitemap XML for Al Jazeera 360 — ready to submit to Google Search Console.
+
+    توليد Video Sitemap XML كامل لمنصة الجزيرة 360 جاهز للرفع على Google Search Console.
+    يحتوي على عناوين وأوصاف وصور مصغرة وتواريخ نشر لكل فيديو.
+
+    Args:
+        sections: Comma-separated section IDs to include, or "all" for all sections (default: "all")
+        max_per_section: Maximum videos per section to include (default: 100)
+    """
+    try:
+        from xml.etree.ElementTree import Element, SubElement, tostring
+        from xml.dom import minidom
+        import datetime
+
+        # Determine which sections to process
+        if sections == "all":
+            section_ids = list(SECTIONS.keys())
+        else:
+            section_ids = [s.strip() for s in sections.split(",") if s.strip() in SECTIONS]
+
+        if not section_ids:
+            return json.dumps({"error": "No valid section IDs provided"}, ensure_ascii=False)
+
+        # Build XML structure
+        urlset = Element("urlset")
+        urlset.set("xmlns", "http://www.sitemaps.org/schemas/sitemap/0.9")
+        urlset.set("xmlns:video", "http://www.google.com/schemas/sitemap-video/1.1")
+
+        total_urls = 0
+        section_counts = {}
+        errors = []
+
+        for section_id in section_ids:
+            try:
+                data = await client.get_section_content(section_id, items_per_bucket=max_per_section)
+                items = []
+                if isinstance(data, dict):
+                    for bucket in data.get("buckets", []):
+                        if isinstance(bucket, dict):
+                            items.extend(bucket.get("contentList", []))
+
+                count = 0
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    video_id = item.get("id") or item.get("vodId")
+                    title = item.get("title", "")
+                    description = item.get("description", "") or ""
+                    thumbnail = item.get("thumbnailUrl") or item.get("coverUrl", "")
+                    published = item.get("publishedDate", "") or ""
+                    duration_sec = item.get("duration", 0) or 0
+
+                    if not video_id or not title:
+                        continue
+
+                    page_url = f"{PLATFORM_URL}/video/{video_id}"
+
+                    url_el = SubElement(urlset, "url")
+                    loc = SubElement(url_el, "loc")
+                    loc.text = page_url
+
+                    if published:
+                        lastmod = SubElement(url_el, "lastmod")
+                        lastmod.text = published[:10]
+
+                    video_el = SubElement(url_el, "video:video")
+
+                    thumb_el = SubElement(video_el, "video:thumbnail_loc")
+                    thumb_el.text = thumbnail or f"https://cdn.aljazeera360.com/thumbnails/{video_id}.jpg"
+
+                    title_el = SubElement(video_el, "video:title")
+                    title_el.text = title[:100]
+
+                    if description:
+                        desc_el = SubElement(video_el, "video:description")
+                        desc_el.text = description[:2048]
+
+                    content_url_el = SubElement(video_el, "video:content_loc")
+                    content_url_el.text = page_url
+
+                    player_el = SubElement(video_el, "video:player_loc")
+                    player_el.text = page_url
+
+                    if duration_sec > 0:
+                        dur_el = SubElement(video_el, "video:duration")
+                        dur_el.text = str(duration_sec)
+
+                    if published:
+                        pub_el = SubElement(video_el, "video:publication_date")
+                        pub_el.text = published[:19] + "+00:00" if len(published) >= 19 else published[:10] + "T00:00:00+00:00"
+
+                    lang_el = SubElement(video_el, "video:tag")
+                    lang_el.text = "الجزيرة 360"
+
+                    total_urls += 1
+                    count += 1
+
+                section_counts[section_id] = count
+
+            except Exception as e:
+                errors.append(f"{section_id}: {str(e)}")
+                section_counts[section_id] = 0
+
+        # Pretty-print XML
+        xml_str = minidom.parseString(tostring(urlset, encoding="unicode")).toprettyxml(indent="  ")
+        # Remove the extra XML declaration added by toprettyxml
+        xml_lines = xml_str.split("\n")
+        if xml_lines[0].startswith("<?xml"):
+            xml_lines[0] = '<?xml version="1.0" encoding="UTF-8"?>'
+        xml_output = "\n".join(xml_lines)
+
+        result = {
+            "total_urls": total_urls,
+            "sections_processed": len(section_ids),
+            "section_counts": section_counts,
+            "errors": errors,
+            "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+            "instructions": [
+                "1. احفظ الـ XML في ملف video-sitemap.xml",
+                "2. ارفعه على الموقع: https://www.aljazeera360.com/video-sitemap.xml",
+                "3. أضفه في robots.txt: Sitemap: https://www.aljazeera360.com/video-sitemap.xml",
+                "4. ارفعه في Google Search Console تحت Sitemaps",
+            ],
+            "sitemap_xml": xml_output,
+        }
+
+        logger.info(f"Generated video sitemap with {total_urls} URLs across {len(section_ids)} sections")
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        logger.error(f"Error generating sitemap: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+@track_request("audit_metadata_quality")
+async def audit_metadata_quality(section_id: str = "AJA", max_items: int = 50) -> str:
+    """
+    Audit the metadata quality of videos in a section and return a detailed report.
+
+    تدقيق جودة الـ metadata للفيديوهات في قسم معين وإرجاع تقرير تفصيلي.
+    يكشف الفيديوهات ذات الوصف القصير أو المفقود أو بدون تصنيفات أو بدون صورة مصغرة.
+
+    Args:
+        section_id: Section to audit (e.g., "AJA", "AJD", "AJ360-Originals"). Default: "AJA"
+        max_items: Maximum number of videos to audit (default: 50)
+    """
+    try:
+        data = await client.get_section_content(section_id, items_per_bucket=max_items)
+
+        items = []
+        if isinstance(data, dict):
+            for bucket in data.get("buckets", []):
+                if isinstance(bucket, dict):
+                    items.extend(bucket.get("contentList", []))
+
+        issues = {
+            "missing_description": [],
+            "short_description": [],
+            "missing_thumbnail": [],
+            "missing_categories": [],
+            "short_title": [],
+            "missing_published_date": [],
+            "low_quality": [],
+        }
+        good_items = []
+        total = 0
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            video_id = item.get("id") or item.get("vodId")
+            title = item.get("title", "") or ""
+            description = item.get("description", "") or ""
+            thumbnail = item.get("thumbnailUrl") or item.get("coverUrl", "")
+            categories = item.get("categories", []) or []
+            published = item.get("publishedDate", "") or ""
+            max_height = item.get("maxHeight", 0) or 0
+
+            if not video_id or not title:
+                continue
+
+            total += 1
+            item_issues = []
+            entry = {"id": video_id, "title": title[:60], "url": f"{PLATFORM_URL}/video/{video_id}"}
+
+            if not description:
+                issues["missing_description"].append(entry)
+                item_issues.append("وصف مفقود")
+            elif len(description) < 80:
+                issues["short_description"].append({**entry, "desc_length": len(description)})
+                item_issues.append(f"وصف قصير ({len(description)} حرف)")
+
+            if not thumbnail:
+                issues["missing_thumbnail"].append(entry)
+                item_issues.append("صورة مصغرة مفقودة")
+
+            if not categories:
+                issues["missing_categories"].append(entry)
+                item_issues.append("بدون تصنيفات")
+
+            if len(title) < 10:
+                issues["short_title"].append({**entry, "title_length": len(title)})
+                item_issues.append(f"عنوان قصير ({len(title)} حرف)")
+
+            if not published:
+                issues["missing_published_date"].append(entry)
+                item_issues.append("تاريخ نشر مفقود")
+
+            if max_height < 720:
+                issues["low_quality"].append({**entry, "max_height": max_height})
+                item_issues.append(f"جودة منخفضة ({max_height}p)")
+
+            if not item_issues:
+                good_items.append(entry)
+
+        # Calculate scores
+        def pct(n): return round(n / total * 100, 1) if total > 0 else 0
+
+        total_issues = sum(len(v) for v in issues.values())
+        health_score = round((good_items.__len__() / total * 100), 1) if total > 0 else 0
+
+        result = {
+            "section": section_id,
+            "section_name": SECTIONS.get(section_id, {}).get("name", section_id) if isinstance(SECTIONS.get(section_id), dict) else str(SECTIONS.get(section_id, section_id)),
+            "total_audited": total,
+            "health_score": f"{health_score}%",
+            "items_with_no_issues": len(good_items),
+            "summary": {
+                "missing_description": {"count": len(issues["missing_description"]), "pct": f"{pct(len(issues['missing_description']))}%"},
+                "short_description": {"count": len(issues["short_description"]), "pct": f"{pct(len(issues['short_description']))}%"},
+                "missing_thumbnail": {"count": len(issues["missing_thumbnail"]), "pct": f"{pct(len(issues['missing_thumbnail']))}%"},
+                "missing_categories": {"count": len(issues["missing_categories"]), "pct": f"{pct(len(issues['missing_categories']))}%"},
+                "short_title": {"count": len(issues["short_title"]), "pct": f"{pct(len(issues['short_title']))}%"},
+                "missing_published_date": {"count": len(issues["missing_published_date"]), "pct": f"{pct(len(issues['missing_published_date']))}%"},
+                "low_quality_video": {"count": len(issues["low_quality"]), "pct": f"{pct(len(issues['low_quality']))}%"},
+            },
+            "top_issues": issues,
+            "recommendations": [
+                f"أضف وصفاً لـ {len(issues['missing_description'])} فيديو بدون وصف" if issues["missing_description"] else None,
+                f"طوّل وصف {len(issues['short_description'])} فيديو (أقل من 80 حرف)" if issues["short_description"] else None,
+                f"أضف تصنيفات لـ {len(issues['missing_categories'])} فيديو بدون تصنيف" if issues["missing_categories"] else None,
+                f"أضف صور مصغرة لـ {len(issues['missing_thumbnail'])} فيديو" if issues["missing_thumbnail"] else None,
+            ],
+        }
+        result["recommendations"] = [r for r in result["recommendations"] if r]
+
+        logger.info(f"Audited {total} items in section {section_id}: health score {health_score}%")
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        logger.error(f"Error auditing metadata quality: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+@track_request("get_trending_topics")
+async def get_trending_topics(top_n: int = 20) -> str:
+    """
+    Analyze trending content and extract the most common topics, keywords, and themes.
+
+    تحليل المحتوى الرائج واستخراج أكثر المواضيع والكلمات المفتاحية انتشاراً.
+    مفيد لاستراتيجية المحتوى وتحديد الكلمات المفتاحية المستهدفة.
+
+    Args:
+        top_n: Number of top topics to return (default: 20)
+    """
+    try:
+        import re
+        from collections import Counter
+
+        # Get trending from multiple sections
+        all_items = []
+        for section_id in ["AJA", "AJD", "AJ360-Originals", "Most-Watched"]:
+            try:
+                data = await client.get_section_content(section_id, items_per_bucket=30)
+                if isinstance(data, dict):
+                    for bucket in data.get("buckets", []):
+                        if isinstance(bucket, dict):
+                            all_items.extend(bucket.get("contentList", []))
+            except Exception:
+                continue
+
+        # Extract words from titles
+        stop_words = {"في", "من", "إلى", "على", "هل", "ما", "كيف", "لم", "لا", "وال", "وفي",
+                        "عن", "بين", "أن", "ال", "وا", "به", "له", "مع", "أو", "ثم", "قد",
+                        "the", "of", "in", "a", "an", "and", "to", "for", "is", "are"}
+
+        word_counter = Counter()
+        category_counter = Counter()
+        quality_counter = Counter()
+        recent_titles = []
+        total_items = 0
+
+        for item in all_items:
+            if not isinstance(item, dict):
+                continue
+            title = item.get("title", "") or ""
+            categories = item.get("categories", []) or []
+            max_height = item.get("maxHeight", 0) or 0
+            published = item.get("publishedDate", "") or ""
+
+            if not title:
+                continue
+
+            total_items += 1
+
+            # Count words in title
+            words = re.findall(r'[\u0600-\u06ff]{3,}|[a-zA-Z]{4,}', title)
+            for word in words:
+                if word not in stop_words and len(word) > 2:
+                    word_counter[word] += 1
+
+            # Count categories
+            for cat in categories:
+                cat_name = cat.get("name", "") if isinstance(cat, dict) else str(cat)
+                if cat_name:
+                    category_counter[cat_name] += 1
+
+            # Quality distribution
+            if max_height >= 2160:
+                quality_counter["4K"] += 1
+            elif max_height >= 1080:
+                quality_counter["Full HD"] += 1
+            elif max_height >= 720:
+                quality_counter["HD"] += 1
+            else:
+                quality_counter["SD"] += 1
+
+            # Recent content (last 7 days)
+            if published:
+                try:
+                    import datetime
+                    pub_date = datetime.datetime.fromisoformat(published.replace("Z", "+00:00"))
+                    days_ago = (datetime.datetime.now(datetime.timezone.utc) - pub_date).days
+                    if days_ago <= 7:
+                        recent_titles.append({"title": title, "published": published[:10], "days_ago": days_ago})
+                except Exception:
+                    pass
+
+        result = {
+            "total_items_analyzed": total_items,
+            "top_keywords": [{"keyword": w, "count": c} for w, c in word_counter.most_common(top_n)],
+            "top_categories": [{"category": cat, "count": c} for cat, c in category_counter.most_common(10)],
+            "quality_distribution": dict(quality_counter),
+            "recent_content_last_7_days": sorted(recent_titles, key=lambda x: x["days_ago"])[:10],
+            "content_strategy_insights": [
+                f"الكلمة الأكثر ظهوراً: '{word_counter.most_common(1)[0][0]}' ({word_counter.most_common(1)[0][1]} مرة)" if word_counter else "لا توجد بيانات كافية",
+                f"أكثر تصنيف ظهوراً: '{category_counter.most_common(1)[0][0]}' ({category_counter.most_common(1)[0][1]} فيديو)" if category_counter else None,
+                f"نسبة المحتوى بجودة 4K: {round(quality_counter.get('4K', 0) / total_items * 100, 1)}%" if total_items > 0 else None,
+                f"عدد المحتوىات المنشورة خلال آخر 7 أيام: {len(recent_titles)}",
+            ],
+        }
+        result["content_strategy_insights"] = [i for i in result["content_strategy_insights"] if i]
+
+        logger.info(f"Analyzed {total_items} items for trending topics")
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        logger.error(f"Error getting trending topics: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+@track_request("compare_sections")
+async def compare_sections() -> str:
+    """
+    Compare all sections by content count, quality distribution, and freshness.
+
+    مقارنة جميع الأقسام من حيث عدد المحتوى وجودة الفيديوهات وحداثة المحتوى.
+    يساعد في تحديد الأقسام المهملة والأقسام ذات الأداء القوي.
+    """
+    try:
+        import datetime
+        results = []
+
+        for section_id, section_info in SECTIONS.items():
+            section_name = section_info.get("name", section_id) if isinstance(section_info, dict) else str(section_info)
+            try:
+                data = await client.get_section_content(section_id, items_per_bucket=20)
+                items = []
+                if isinstance(data, dict):
+                    for bucket in data.get("buckets", []):
+                        if isinstance(bucket, dict):
+                            items.extend(bucket.get("contentList", []))
+
+                total = len([i for i in items if isinstance(i, dict) and (i.get("id") or i.get("vodId"))])
+                heights = [i.get("maxHeight", 0) or 0 for i in items if isinstance(i, dict)]
+                has_4k = sum(1 for h in heights if h >= 2160)
+                has_fhd = sum(1 for h in heights if 1080 <= h < 2160)
+                has_hd = sum(1 for h in heights if 720 <= h < 1080)
+
+                # Find most recent item
+                dates = []
+                for i in items:
+                    if isinstance(i, dict) and i.get("publishedDate"):
+                        try:
+                            d = datetime.datetime.fromisoformat(i["publishedDate"].replace("Z", "+00:00"))
+                            dates.append(d)
+                        except Exception:
+                            pass
+
+                latest_date = max(dates).strftime("%Y-%m-%d") if dates else "unknown"
+                days_since_update = (datetime.datetime.now(datetime.timezone.utc) - max(dates)).days if dates else 999
+
+                results.append({
+                    "section_id": section_id,
+                    "section_name": section_name,
+                    "items_loaded": total,
+                    "quality": {
+                        "4K": has_4k,
+                        "Full_HD": has_fhd,
+                        "HD": has_hd,
+                        "pct_4K": f"{round(has_4k/total*100, 1)}%" if total > 0 else "0%"
+                    },
+                    "latest_content": latest_date,
+                    "days_since_update": days_since_update,
+                    "freshness": "🟢 حديث" if days_since_update <= 7 else "🟡 متوسط" if days_since_update <= 30 else "🔴 قديم",
+                })
+
+            except Exception as e:
+                results.append({
+                    "section_id": section_id,
+                    "section_name": section_name,
+                    "error": str(e),
+                    "items_loaded": 0,
+                })
+
+        # Sort by freshness
+        results.sort(key=lambda x: x.get("days_since_update", 999))
+
+        # Summary
+        active = [r for r in results if r.get("days_since_update", 999) <= 7]
+        stale = [r for r in results if r.get("days_since_update", 999) > 30]
+
+        summary = {
+            "total_sections": len(results),
+            "active_sections_last_7_days": len(active),
+            "stale_sections_over_30_days": len(stale),
+            "most_active": results[0]["section_name"] if results else "N/A",
+            "least_active": results[-1]["section_name"] if results else "N/A",
+        }
+
+        logger.info(f"Compared {len(results)} sections")
+        return json.dumps({"summary": summary, "sections": results}, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        logger.error(f"Error comparing sections: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+@track_request("get_series_seo_map")
+async def get_series_seo_map(series_id: int) -> str:
+    """
+    Build a complete SEO map for a series: all seasons, episodes, internal links, and schema.
+
+    بناء خريطة SEO كاملة لسلسلة: جميع المواسم والحلقات مع روابط داخلية مقترحة.
+    مفيد لتحسين الـ internal linking واكتشاف السلسلة في نتائج البحث.
+
+    Args:
+        series_id: The series ID (get from get_series_details or search_videos)
+    """
+    try:
+        # Get series details
+        series_data = await client.get_vod_details(series_id)
+
+        series_title = series_data.get("title", f"Series {series_id}")
+        series_description = series_data.get("description", "")
+        series_thumbnail = series_data.get("thumbnailUrl") or series_data.get("coverUrl", "")
+        seasons = series_data.get("seasons", []) or []
+
+        episodes_map = []
+        total_episodes = 0
+
+        for season in seasons[:5]:  # Limit to 5 seasons
+            if not isinstance(season, dict):
+                continue
+            season_id = season.get("id")
+            season_num = season.get("seasonNumber", season.get("number", ""))
+            season_title = season.get("title", f"الموسم {season_num}")
+
+            if not season_id:
+                continue
+
+            try:
+                season_episodes = await client.get_season_episodes_data(season_id, max_episodes=20)
+                for ep in season_episodes:
+                    if not isinstance(ep, dict):
+                        continue
+                    ep_id = ep.get("id") or ep.get("vodId")
+                    ep_title = ep.get("title", "")
+                    ep_num = ep.get("episodeNumber", "")
+                    ep_desc = ep.get("description", "")
+                    ep_published = ep.get("publishedDate", "")
+                    ep_duration = ep.get("duration", 0) or 0
+                    ep_thumb = ep.get("thumbnailUrl") or ep.get("coverUrl", "")
+
+                    if not ep_id or not ep_title:
+                        continue
+
+                    total_episodes += 1
+                    episodes_map.append({
+                        "season": season_num,
+                        "season_title": season_title,
+                        "episode": ep_num,
+                        "id": ep_id,
+                        "title": ep_title,
+                        "url": f"{PLATFORM_URL}/video/{ep_id}",
+                        "description_length": len(ep_desc),
+                        "published": ep_published[:10] if ep_published else "",
+                        "duration_min": ep_duration // 60,
+                        "has_thumbnail": bool(ep_thumb),
+                        "suggested_meta_title": f"{ep_title} | {series_title} | الجزيرة 360"[:60],
+                        "internal_link_text": f"شاهد الحلقة {ep_num} من {series_title}",
+                    })
+            except Exception:
+                continue
+
+        # Build TVSeries schema
+        tv_series_schema = {
+            "@context": "https://schema.org",
+            "@type": "TVSeries",
+            "name": series_title,
+            "description": series_description,
+            "url": f"{PLATFORM_URL}/series/{series_id}",
+            "thumbnailUrl": series_thumbnail,
+            "inLanguage": "ar",
+            "numberOfEpisodes": total_episodes,
+            "numberOfSeasons": len(seasons),
+            "publisher": {
+                "@type": "Organization",
+                "name": "الجزيرة 360",
+                "url": PLATFORM_URL
+            }
+        }
+
+        result = {
+            "series_id": series_id,
+            "series_title": series_title,
+            "total_seasons": len(seasons),
+            "total_episodes_mapped": total_episodes,
+            "series_url": f"{PLATFORM_URL}/series/{series_id}",
+            "episodes": episodes_map,
+            "tv_series_schema": tv_series_schema,
+            "tv_series_schema_html": f'<script type="application/ld+json">\n{json.dumps(tv_series_schema, ensure_ascii=False, indent=2)}\n</script>',
+            "seo_recommendations": [
+                f"بناء صفحة رئيسية لـ '{series_title}' تجمع كل الحلقات",
+                "إضافة TVSeries schema في صفحة السلسلة",
+                "ربط كل حلقة بالحلقة التالية والسابقة (internal linking)",
+                f"استخدام الكلمة المفتاحية '{series_title}' في عناوين كل حلقة",
+            ],
+        }
+
+        logger.info(f"Built SEO map for series {series_id}: {series_title} ({total_episodes} episodes)")
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        logger.error(f"Error building series SEO map: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ============================================================================
 # MCP Resources
 # ============================================================================
 
