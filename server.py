@@ -972,17 +972,20 @@ async def search_videos(query: str, content_type: Optional[str] = None, max_resu
             
             if browse_results:
                 logger.info(f"Browse fallback found {len(browse_results)} relevant results")
-                # Merge: put browse results first (they are more relevant), then Vesper results
-                merged = browse_results[:max_results]
-                remaining_slots = max_results - len(merged)
-                if remaining_slots > 0:
-                    # Add Vesper results that aren't already in browse results
+                # If we have enough keyword-matched results (≥5), use them exclusively
+                # to avoid mixing unrelated trending content into the results
+                if len(browse_results) >= 5:
+                    results = browse_results[:max_results]
+                else:
+                    # Not enough browse results — supplement with Vesper trending
+                    merged = browse_results[:max_results]
+                    remaining_slots = max_results - len(merged)
                     browse_ids = {r.get("id") for r in merged}
                     for r in results:
                         if r.get("id") not in browse_ids and remaining_slots > 0:
                             merged.append(r)
                             remaining_slots -= 1
-                results = merged
+                    results = merged
         
         output = {
             "query": query,
