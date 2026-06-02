@@ -112,14 +112,18 @@ class TokenManager:
     
     Authentication flow (in priority order):
     1. Use existing valid token (if not expired)
-    2. Refresh using refresh token (POST /api/v4/session/token/refresh)
-    3. Create new guest session (POST /api/v4/session)
+    2. Refresh using refresh token (POST /api/v2/token/refresh)
+    3. Create new guest session via GET /api/v1/init (returns auth + refresh tokens)
     4. Fall back to AJ360_AUTH_TOKEN environment variable
     
     Token lifecycle:
     - Auth tokens expire every ~10 minutes
     - Refresh tokens are long-lived (~1 year)
     - Guest sessions are anonymous but fully functional
+    
+    Note: The old /api/v4/session and /api/v4/session/token/refresh endpoints
+    are no longer available (404). The new endpoints are /api/v1/init and
+    /api/v2/token/refresh.
     """
     
     def __init__(self):
@@ -151,17 +155,21 @@ class TokenManager:
         return self._auth_token or ""
     
     async def _refresh_auth_token(self) -> bool:
-        """Refresh the auth token using the refresh token."""
+        """Refresh the auth token using the refresh token.
+        
+        Uses /api/v2/token/refresh (new endpoint, replaces deprecated /api/v4/session/token/refresh).
+        Requires the refresh token in both Authorization header and request body.
+        """
         async with httpx.AsyncClient(timeout=15) as http:
             try:
                 resp = await http.post(
-                    f"{API_BASE}/api/v4/session/token/refresh",
+                    f"{API_BASE}/api/v2/token/refresh",
                     headers={
                         "Accept": "application/json",
                         "Content-Type": "application/json",
                         "x-api-key": API_KEY,
                         "Realm": REALM,
-                        "app": "dice",
+                        "Authorization": f"Bearer {self._refresh_token}",
                     },
                     json={"refreshToken": self._refresh_token}
                 )
@@ -174,39 +182,50 @@ class TokenManager:
                         self._refresh_token = new_refresh
                         self._persist_refresh_token(new_refresh)
                     self._token_expiry = datetime.now() + timedelta(minutes=9)
-                    logger.info("Successfully refreshed auth token")
+                    logger.info("Successfully refreshed auth token via /api/v2/token/refresh")
                     return True
                 else:
-                    logger.warning(f"Token refresh returned {resp.status_code}")
+                    logger.warning(f"Token refresh returned {resp.status_code}: {resp.text[:100]}")
                     return False
             except Exception as e:
                 logger.error(f"Failed to refresh token: {e}")
                 return False
     
     async def _get_guest_token(self):
-        """Get a guest/anonymous token from the platform."""
+        """Get a guest/anonymous token from the platform.
+        
+        Uses GET /api/v1/init (new endpoint, replaces deprecated POST /api/v4/session).
+        Returns authentication.authorisationToken and authentication.refreshToken.
+        """
         async with httpx.AsyncClient(timeout=15) as http:
             try:
-                resp = await http.post(
-                    f"{API_BASE}/api/v4/session",
+                resp = await http.get(
+                    f"{API_BASE}/api/v1/init/",
+                    params={
+                        "lk": "language",
+                        "menuTargetPlatform": "WEB",
+                        "rpp": "12",
+                        "section": "home",
+                    },
                     headers={
                         "Accept": "application/json",
-                        "Content-Type": "application/json",
                         "x-api-key": API_KEY,
                         "Realm": REALM,
-                        "app": "dice",
-                    },
-                    json={"device": "BROWSER"}
+                    }
                 )
                 
                 if resp.status_code == 200:
                     data = resp.json()
-                    self._auth_token = data.get("authorisationToken", "")
-                    self._refresh_token = data.get("refreshToken", "")
+                    auth = data.get("authentication", {})
+                    self._auth_token = auth.get("authorisationToken", "")
+                    new_refresh = auth.get("refreshToken", "")
+                    if new_refresh:
+                        self._refresh_token = new_refresh
+                        self._persist_refresh_token(new_refresh)
                     self._token_expiry = datetime.now() + timedelta(minutes=9)
-                    logger.info("Successfully obtained guest token")
+                    logger.info("Successfully obtained guest token via /api/v1/init")
                 else:
-                    logger.warning(f"Session endpoint returned {resp.status_code}")
+                    logger.warning(f"Init endpoint returned {resp.status_code}: {resp.text[:100]}")
             except Exception as e:
                 logger.error(f"Failed to get guest token: {e}")
     
