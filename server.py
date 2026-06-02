@@ -416,15 +416,22 @@ class AlJazeera360Client:
         
         Tested: Returns elements[] with cardList containing cards.
         Each card has action.data with (type, title, id, accessLevel).
+        
+        Note: The Vesper search API supports sort values: title, relevance, publicationDate.
+        We use sort=relevance and fetch more results (3x) then apply client-side
+        relevance filtering to ensure query terms appear in titles/descriptions.
         """
         token = await self.token_manager.get_token()
+        # Fetch 3x results to allow client-side relevance filtering
+        fetch_size = min(page_size * 3, 60)
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(
                 SEARCH_API,
                 params={
                     "term": query,
-                    "pageSize": page_size,
+                    "pageSize": fetch_size,
                     "timezone": "UTC",
+                    "sort": "relevance",
                 },
                 headers=self._get_headers(token),
             )
@@ -479,8 +486,56 @@ def format_series_item(item: dict) -> dict:
     }
 
 
-def format_search_results(data: dict) -> list:
-    """Parse search API response and extract content items."""
+def _score_result_relevance(result: dict, query: str) -> int:
+    """Score a search result by relevance to the query.
+    
+    Higher score = more relevant. Used to re-rank results after fetching.
+    Scoring:
+    - Title contains exact query: +10
+    - Title contains any query word: +5 per word
+    - Series title contains query: +3
+    - Content type is VOD or SERIES (not channel): +1
+    """
+    score = 0
+    query_lower = query.strip().lower()
+    query_words = [w for w in query_lower.split() if len(w) > 1]
+    
+    title = result.get("title", "").lower()
+    series = result.get("series", "").lower()
+    content_type = result.get("type", "")
+    
+    # Exact query match in title (highest priority)
+    if query_lower in title:
+        score += 10
+    
+    # Individual word matches in title
+    for word in query_words:
+        if word in title:
+            score += 5
+    
+    # Series title match
+    if query_lower in series:
+        score += 3
+    for word in query_words:
+        if word in series:
+            score += 2
+    
+    # Prefer actual content over channels/categories
+    if content_type in ("VOD", "SERIES"):
+        score += 1
+    
+    return score
+
+
+def format_search_results(data: dict, query: str = "", max_results: int = 20) -> list:
+    """Parse search API response and extract content items.
+    
+    Applies client-side relevance re-ranking:
+    1. Extracts all results from the API response
+    2. Scores each result by how well it matches the query
+    3. Returns results sorted by relevance score (highest first)
+    4. Falls back to original API order if no query provided
+    """
     results = []
     for element in data.get("elements", []):
         if element.get("$type") == "cardList":
@@ -525,7 +580,18 @@ def format_search_results(data: dict) -> list:
                         "watch_url": url,
                         "access_level": action_data.get("accessLevel", "UNKNOWN"),
                     })
-    return results
+    
+    # Apply client-side relevance re-ranking if query provided
+    if query and results:
+        # Score all results
+        scored = [(r, _score_result_relevance(r, query)) for r in results]
+        # Sort by score descending, preserving API order for ties
+        scored.sort(key=lambda x: x[1], reverse=True)
+        # Return top max_results, prioritizing those with score > 0
+        ranked = [r for r, s in scored]
+        return ranked[:max_results]
+    
+    return results[:max_results]
 
 
 # ============================================================================
@@ -848,18 +914,82 @@ async def search_videos(query: str, content_type: Optional[str] = None, max_resu
     """
     try:
         data = await client.search_content(query, page_size=max_results)
-        results = format_search_results(data)
+        # Pass query for client-side relevance re-ranking
+        results = format_search_results(data, query=query, max_results=max_results)
         
         # Apply content_type filter if specified
         if content_type:
             content_type_upper = content_type.upper()
             results = [r for r in results if r.get("type", "").upper() == content_type_upper]
         
+        # Count how many results are actually relevant (score > 0)
+        query_lower = query.strip().lower()
+        query_words = [w for w in query_lower.split() if len(w) > 1]
+        relevant_count = sum(
+            1 for r in results
+            if any(kw in r.get("title", "").lower() for kw in [query_lower] + query_words)
+        )
+        
+        # If Vesper search returned few relevant results, supplement with browse-based search
+        # The Vesper API returns trending content regardless of query, so we browse sections
+        # and filter by keyword to find actual matching content
+        browse_results = []
+        if relevant_count < 3 and len(query_words) > 0:
+            logger.info(f"Low relevance from Vesper search ({relevant_count} relevant). Trying browse fallback.")
+            # Browse key sections and filter by query
+            browse_sections = ["AJA", "AJD", "AJ360-Originals", "Documentaries"]
+            seen_ids = {r.get("id") for r in results}
+            
+            for section_id in browse_sections:
+                try:
+                    section_data = await client.get_section_content(section_id, items_per_bucket=20)
+                    for bucket in section_data.get("buckets", []):
+                        for item in bucket.get("contentList", []):
+                            item_title = item.get("title", "").lower()
+                            item_id = str(item.get("id", ""))
+                            # Check if any query word appears in the title
+                            if item_id not in seen_ids and any(kw in item_title for kw in query_words):
+                                seen_ids.add(item_id)
+                                item_type = item.get("type", "VOD")
+                                url = (
+                                    f"{PLATFORM_URL}/video/{item_id}"
+                                    if item_type == "VOD"
+                                    else f"{PLATFORM_URL}/series/{item_id}"
+                                )
+                                browse_results.append({
+                                    "title": item.get("title", ""),
+                                    "series": "",
+                                    "type": item_type,
+                                    "id": item_id,
+                                    "image": item.get("thumbnailUrl", item.get("coverUrl", "")),
+                                    "watch_url": url,
+                                    "access_level": item.get("accessLevel", "UNKNOWN"),
+                                    "source": "browse",
+                                })
+                except Exception as browse_err:
+                    logger.warning(f"Browse fallback failed for {section_id}: {browse_err}")
+                    continue
+            
+            if browse_results:
+                logger.info(f"Browse fallback found {len(browse_results)} relevant results")
+                # Merge: put browse results first (they are more relevant), then Vesper results
+                merged = browse_results[:max_results]
+                remaining_slots = max_results - len(merged)
+                if remaining_slots > 0:
+                    # Add Vesper results that aren't already in browse results
+                    browse_ids = {r.get("id") for r in merged}
+                    for r in results:
+                        if r.get("id") not in browse_ids and remaining_slots > 0:
+                            merged.append(r)
+                            remaining_slots -= 1
+                results = merged
+        
         output = {
             "query": query,
             "content_type_filter": content_type,
             "total_results": len(results),
             "platform": "Al Jazeera 360",
+            "search_note": "Results include both keyword-matched and trending content" if browse_results else "Results from platform search",
             "results": results,
         }
         
