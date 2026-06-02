@@ -2705,6 +2705,492 @@ async def find_evergreen_content(sections: str = "AJA,AJD") -> str:
 
 
 # ============================================================================
+# Advanced Tools — typedTags & episodeInformation
+# ============================================================================
+
+@mcp.tool()
+async def get_host_profile(host_name: str, max_items: int = 20) -> str:
+    """
+    Get a complete profile for a show host/presenter including all their content,
+    genres covered, shows hosted, and an SEO-ready host page schema.
+    
+    Args:
+        host_name: Name of the host/presenter (Arabic or English)
+        max_items: Maximum number of items to scan per section (default: 20)
+    """
+    try:
+        host_name_lower = host_name.strip()
+        host_videos = []
+        genres_set = set()
+        shows_set = set()
+        countries_set = set()
+        tags_list = []
+
+        # Scan all sections for content by this host
+        for section_id in list(SECTIONS.keys())[:8]:  # scan first 8 sections
+            try:
+                data = await client.get_section_content(section_id, items_per_bucket=max_items)
+                buckets = data.get("buckets", []) if isinstance(data, dict) else []
+                for bucket in buckets:
+                    for item in bucket.get("contentList", []):
+                        vid_id = item.get("id")
+                        if not vid_id:
+                            continue
+                        try:
+                            vod = await client.get_vod_details(vid_id)
+                            if not isinstance(vod, dict):
+                                continue
+                            typed_tags = vod.get("typedTags", [])
+                            # Check if this host is in the typedTags
+                            host_match = False
+                            for tag in typed_tags:
+                                if tag.get("name") in ("Host", "Host Name", "Featured Host"):
+                                    if host_name_lower.lower() in tag.get("value", "").lower():
+                                        host_match = True
+                                if tag.get("name") in ("Genre", "Featured Genre"):
+                                    genres_set.add(tag.get("value", ""))
+                                if tag.get("name") == "Show Name":
+                                    shows_set.add(tag.get("value", ""))
+                                if tag.get("name") == "Related Country":
+                                    countries_set.add(tag.get("value", ""))
+                                if tag.get("name") == "Searchable Tags":
+                                    tags_list.append(tag.get("value", ""))
+                            if host_match:
+                                ep_info = vod.get("episodeInformation", {})
+                                host_videos.append({
+                                    "id": vid_id,
+                                    "title": vod.get("title", ""),
+                                    "description": vod.get("description", "")[:120],
+                                    "duration": vod.get("duration", 0),
+                                    "publishedDate": vod.get("publishedDate", "")[:10],
+                                    "show": ep_info.get("seriesInformation", {}).get("title", ""),
+                                    "season": ep_info.get("seasonNumber", ""),
+                                    "episode": ep_info.get("episodeNumber", ""),
+                                    "thumbnail": vod.get("thumbnailUrl", ""),
+                                    "accessLevel": vod.get("accessLevel", "")
+                                })
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+
+        if not host_videos:
+            return json.dumps({"error": f"No content found for host: {host_name}"}, ensure_ascii=False)
+
+        # Build Person + ItemList Schema
+        from collections import Counter
+        top_tags = [t for t, _ in Counter(tags_list).most_common(10)]
+        schema = {
+            "@context": "https://schema.org",
+            "@type": "Person",
+            "name": host_name,
+            "worksFor": {"@type": "Organization", "name": "الجزيرة 360"},
+            "knowsAbout": list(genres_set),
+            "sameAs": f"https://www.aljazeera360.com/search?q={host_name}"
+        }
+
+        result = {
+            "host": host_name,
+            "total_videos": len(host_videos),
+            "shows_hosted": sorted(shows_set),
+            "genres_covered": sorted(genres_set),
+            "countries_covered": sorted(countries_set),
+            "top_keywords": top_tags,
+            "seo_meta_title": f"{host_name} | مقدّم برامج الجزيرة 360",
+            "seo_meta_description": f"شاهد جميع حلقات ومقاطع {host_name} على الجزيرة 360 — {len(host_videos)} فيديو في {', '.join(list(shows_set)[:3])}.",
+            "person_schema": schema,
+            "videos": host_videos[:20]
+        }
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def get_genre_report(genre: str = "", max_items: int = 15) -> str:
+    """
+    Get a full report of content by genre or sub-genre using typedTags data.
+    Lists all content in that genre with SEO metadata for building category pages.
+    
+    Args:
+        genre: Genre name in Arabic (e.g. صحة, رياضة, سياسة, وثائقي) — leave empty for all genres
+        max_items: Items per section to scan (default: 15)
+    """
+    try:
+        genre_map = {}  # genre -> list of videos
+        subgenre_map = {}  # subgenre -> list of videos
+
+        for section_id in list(SECTIONS.keys())[:8]:
+            try:
+                data = await client.get_section_content(section_id, items_per_bucket=max_items)
+                buckets = data.get("buckets", []) if isinstance(data, dict) else []
+                for bucket in buckets:
+                    for item in bucket.get("contentList", []):
+                        vid_id = item.get("id")
+                        if not vid_id:
+                            continue
+                        try:
+                            vod = await client.get_vod_details(vid_id)
+                            if not isinstance(vod, dict):
+                                continue
+                            typed_tags = vod.get("typedTags", [])
+                            vid_genre = ""
+                            vid_subgenre = ""
+                            vid_tags = []
+                            for tag in typed_tags:
+                                if tag.get("name") in ("Genre", "Featured Genre"):
+                                    vid_genre = tag.get("value", "")
+                                if tag.get("name") == "Sub-Genre":
+                                    vid_subgenre = tag.get("value", "")
+                                if tag.get("name") == "Searchable Tags":
+                                    vid_tags.append(tag.get("value", ""))
+
+                            # Filter by genre if specified
+                            if genre and genre.lower() not in (vid_genre + vid_subgenre).lower():
+                                continue
+
+                            video_entry = {
+                                "id": vid_id,
+                                "title": vod.get("title", ""),
+                                "genre": vid_genre,
+                                "subgenre": vid_subgenre,
+                                "tags": vid_tags,
+                                "duration": vod.get("duration", 0),
+                                "publishedDate": vod.get("publishedDate", "")[:10],
+                                "accessLevel": vod.get("accessLevel", "")
+                            }
+
+                            if vid_genre:
+                                genre_map.setdefault(vid_genre, []).append(video_entry)
+                            if vid_subgenre:
+                                subgenre_map.setdefault(vid_subgenre, []).append(video_entry)
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+
+        if not genre_map and not subgenre_map:
+            return json.dumps({"error": "No genre data found"}, ensure_ascii=False)
+
+        # Build summary
+        genre_summary = [
+            {"genre": g, "count": len(vids),
+             "seo_page_title": f"محتوى {g} | الجزيرة 360",
+             "seo_description": f"شاهد {len(vids)} فيديو في تصنيف {g} على الجزيرة 360 بجودة 4K.",
+             "sample_videos": [v["title"] for v in vids[:5]]}
+            for g, vids in sorted(genre_map.items(), key=lambda x: -len(x[1]))
+        ]
+        subgenre_summary = [
+            {"subgenre": sg, "count": len(vids),
+             "sample_videos": [v["title"] for v in vids[:3]]}
+            for sg, vids in sorted(subgenre_map.items(), key=lambda x: -len(x[1]))
+        ]
+
+        result = {
+            "filter": genre or "all",
+            "total_genres": len(genre_map),
+            "total_subgenres": len(subgenre_map),
+            "genres": genre_summary,
+            "subgenres": subgenre_summary
+        }
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def get_searchable_tags_map(max_items: int = 20, top_n: int = 50) -> str:
+    """
+    Extract and rank all Searchable Tags from the entire catalog.
+    These are the exact keywords the audience searches for — ideal for SEO keyword strategy.
+    Also returns Related Countries and Genres distribution.
+    
+    Args:
+        max_items: Items per section to scan (default: 20)
+        top_n: Number of top tags to return (default: 50)
+    """
+    try:
+        from collections import Counter
+        all_tags = Counter()
+        all_countries = Counter()
+        all_genres = Counter()
+        all_subgenres = Counter()
+        all_formats = Counter()
+        all_hosts = Counter()
+        total_videos = 0
+
+        for section_id in list(SECTIONS.keys())[:10]:
+            try:
+                data = await client.get_section_content(section_id, items_per_bucket=max_items)
+                buckets = data.get("buckets", []) if isinstance(data, dict) else []
+                for bucket in buckets:
+                    for item in bucket.get("contentList", []):
+                        vid_id = item.get("id")
+                        if not vid_id:
+                            continue
+                        try:
+                            vod = await client.get_vod_details(vid_id)
+                            if not isinstance(vod, dict):
+                                continue
+                            total_videos += 1
+                            for tag in vod.get("typedTags", []):
+                                name = tag.get("name", "")
+                                value = tag.get("value", "").strip()
+                                if not value:
+                                    continue
+                                if name == "Searchable Tags":
+                                    all_tags[value] += 1
+                                elif name == "Related Country":
+                                    all_countries[value] += 1
+                                elif name in ("Genre", "Featured Genre"):
+                                    all_genres[value] += 1
+                                elif name == "Sub-Genre":
+                                    all_subgenres[value] += 1
+                                elif name == "Format":
+                                    all_formats[value] += 1
+                                elif name in ("Host", "Featured Host"):
+                                    all_hosts[value] += 1
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+
+        result = {
+            "total_videos_scanned": total_videos,
+            "top_searchable_tags": [
+                {"keyword": tag, "frequency": count, "seo_priority": "high" if count >= 5 else "medium" if count >= 2 else "low"}
+                for tag, count in all_tags.most_common(top_n)
+            ],
+            "top_countries": [{"country": c, "count": n} for c, n in all_countries.most_common(20)],
+            "genres_distribution": [{"genre": g, "count": n} for g, n in all_genres.most_common()],
+            "subgenres_distribution": [{"subgenre": sg, "count": n} for sg, n in all_subgenres.most_common(20)],
+            "content_formats": [{"format": f, "count": n} for f, n in all_formats.most_common()],
+            "top_hosts": [{"host": h, "count": n} for h, n in all_hosts.most_common(10)],
+            "seo_insight": f"أعلى 3 كلمات مفتاحية: {', '.join([t for t, _ in all_tags.most_common(3)])}. أكثر الدول تغطيةً: {', '.join([c for c, _ in all_countries.most_common(3)])}"
+        }
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def get_country_content_map(country: str = "", max_items: int = 20) -> str:
+    """
+    Map all content by Related Country from typedTags.
+    Useful for geo-targeted SEO, international content strategy, and country-specific landing pages.
+    
+    Args:
+        country: Filter by specific country name in Arabic (e.g. فلسطين, تركيا, فرنسا) — leave empty for all countries
+        max_items: Items per section to scan (default: 20)
+    """
+    try:
+        country_map = {}  # country -> list of videos
+
+        for section_id in list(SECTIONS.keys())[:8]:
+            try:
+                data = await client.get_section_content(section_id, items_per_bucket=max_items)
+                buckets = data.get("buckets", []) if isinstance(data, dict) else []
+                for bucket in buckets:
+                    for item in bucket.get("contentList", []):
+                        vid_id = item.get("id")
+                        if not vid_id:
+                            continue
+                        try:
+                            vod = await client.get_vod_details(vid_id)
+                            if not isinstance(vod, dict):
+                                continue
+                            vid_countries = []
+                            vid_genre = ""
+                            vid_tags = []
+                            for tag in vod.get("typedTags", []):
+                                if tag.get("name") == "Related Country":
+                                    vid_countries.append(tag.get("value", ""))
+                                if tag.get("name") in ("Genre", "Featured Genre"):
+                                    vid_genre = tag.get("value", "")
+                                if tag.get("name") == "Searchable Tags":
+                                    vid_tags.append(tag.get("value", ""))
+
+                            if not vid_countries:
+                                continue
+
+                            video_entry = {
+                                "id": vid_id,
+                                "title": vod.get("title", ""),
+                                "genre": vid_genre,
+                                "tags": vid_tags[:5],
+                                "duration": vod.get("duration", 0),
+                                "publishedDate": vod.get("publishedDate", "")[:10],
+                                "accessLevel": vod.get("accessLevel", "")
+                            }
+
+                            for c in vid_countries:
+                                if not country or country.lower() in c.lower():
+                                    country_map.setdefault(c, []).append(video_entry)
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+
+        if not country_map:
+            return json.dumps({"error": f"No content found for country: {country or 'any'}"}, ensure_ascii=False)
+
+        # Build summary with SEO page suggestions
+        country_summary = []
+        for c, vids in sorted(country_map.items(), key=lambda x: -len(x[1])):
+            from collections import Counter
+            all_tags = [t for v in vids for t in v.get("tags", [])]
+            top_tags = [t for t, _ in Counter(all_tags).most_common(5)]
+            country_summary.append({
+                "country": c,
+                "video_count": len(vids),
+                "top_keywords": top_tags,
+                "seo_page_title": f"محتوى عن {c} | الجزيرة 360",
+                "seo_description": f"شاهد {len(vids)} فيديو ووثائقي عن {c} على الجزيرة 360 بجودة 4K Ultra HD.",
+                "sample_videos": [v["title"] for v in vids[:5]]
+            })
+
+        result = {
+            "filter": country or "all countries",
+            "total_countries": len(country_map),
+            "total_videos_with_country": sum(len(v) for v in country_map.values()),
+            "countries": country_summary
+        }
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def generate_series_schema(series_id: int) -> str:
+    """
+    Generate complete TVSeries + TVEpisode JSON-LD Schema for a series.
+    Uses episodeInformation from typedTags for rich structured data.
+    This is the most powerful Schema type for video series in Google Search.
+    
+    Args:
+        series_id: The series/show ID (get from get_video_details episodeInformation.seriesInformation.id)
+    """
+    try:
+        # Get series info by browsing sections and finding episodes of this series
+        episodes = []
+        series_title = ""
+        series_genres = set()
+        series_hosts = set()
+        series_countries = set()
+        series_tags = []
+
+        for section_id in list(SECTIONS.keys())[:10]:
+            try:
+                data = await client.get_section_content(section_id, items_per_bucket=20)
+                buckets = data.get("buckets", []) if isinstance(data, dict) else []
+                for bucket in buckets:
+                    for item in bucket.get("contentList", []):
+                        vid_id = item.get("id")
+                        if not vid_id:
+                            continue
+                        try:
+                            vod = await client.get_vod_details(vid_id)
+                            if not isinstance(vod, dict):
+                                continue
+                            ep_info = vod.get("episodeInformation", {})
+                            series_info = ep_info.get("seriesInformation", {})
+                            if series_info.get("id") != series_id:
+                                continue
+
+                            series_title = series_info.get("title", series_title)
+
+                            for tag in vod.get("typedTags", []):
+                                if tag.get("name") in ("Genre", "Featured Genre"):
+                                    series_genres.add(tag.get("value", ""))
+                                if tag.get("name") in ("Host", "Featured Host"):
+                                    series_hosts.add(tag.get("value", ""))
+                                if tag.get("name") == "Related Country":
+                                    series_countries.add(tag.get("value", ""))
+                                if tag.get("name") == "Searchable Tags":
+                                    series_tags.append(tag.get("value", ""))
+
+                            episodes.append({
+                                "id": vid_id,
+                                "title": vod.get("title", ""),
+                                "description": vod.get("description", ""),
+                                "duration": vod.get("duration", 0),
+                                "episodeNumber": ep_info.get("episodeNumber", ""),
+                                "seasonNumber": ep_info.get("seasonNumber", ""),
+                                "publishedDate": vod.get("publishedDate", "")[:10],
+                                "thumbnail": vod.get("thumbnailUrl", ""),
+                                "url": f"https://www.aljazeera360.com/video/{vid_id}"
+                            })
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+            if len(episodes) >= 20:
+                break
+
+        if not episodes:
+            return json.dumps({"error": f"No episodes found for series_id: {series_id}"}, ensure_ascii=False)
+
+        # Sort episodes by episode number
+        episodes.sort(key=lambda x: (x.get("seasonNumber", 0), x.get("episodeNumber", 0)))
+
+        # Build TVSeries Schema
+        def iso_duration(seconds):
+            if not seconds:
+                return "PT0S"
+            m, s = divmod(int(seconds), 60)
+            h, m = divmod(m, 60)
+            return f"PT{h}H{m}M{s}S" if h else f"PT{m}M{s}S"
+
+        tv_series_schema = {
+            "@context": "https://schema.org",
+            "@type": "TVSeries",
+            "name": series_title,
+            "url": f"https://www.aljazeera360.com/series/{series_id}",
+            "description": f"مسلسل وثائقي {series_title} على الجزيرة 360",
+            "genre": list(series_genres),
+            "inLanguage": "ar",
+            "producer": {"@type": "Organization", "name": "الجزيرة 360"},
+            "actor": [{"@type": "Person", "name": h} for h in series_hosts],
+            "numberOfEpisodes": len(episodes),
+            "episode": [
+                {
+                    "@type": "TVEpisode",
+                    "name": ep["title"],
+                    "description": ep["description"][:200],
+                    "episodeNumber": ep["episodeNumber"],
+                    "partOfSeason": {"@type": "TVSeason", "seasonNumber": ep["seasonNumber"]},
+                    "duration": iso_duration(ep["duration"]),
+                    "datePublished": ep["publishedDate"],
+                    "thumbnailUrl": ep["thumbnail"],
+                    "url": ep["url"]
+                }
+                for ep in episodes[:10]  # first 10 episodes in schema
+            ]
+        }
+
+        from collections import Counter
+        top_tags = [t for t, _ in Counter(series_tags).most_common(8)]
+
+        result = {
+            "series_id": series_id,
+            "series_title": series_title,
+            "total_episodes_found": len(episodes),
+            "genres": list(series_genres),
+            "hosts": list(series_hosts),
+            "countries_covered": list(series_countries),
+            "top_keywords": top_tags,
+            "seo_meta_title": f"{series_title} | الجزيرة 360",
+            "seo_meta_description": f"شاهد جميع حلقات {series_title} على الجزيرة 360 — {len(episodes)} حلقة بجودة 4K.",
+            "tv_series_schema": tv_series_schema,
+            "schema_html": f'<script type="application/ld+json">\n{json.dumps(tv_series_schema, ensure_ascii=False, indent=2)}\n</script>',
+            "episodes": episodes
+        }
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ============================================================================
 # MCP Resources
 # ============================================================================
 
