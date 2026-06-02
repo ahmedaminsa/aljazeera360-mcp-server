@@ -29,6 +29,7 @@ from functools import wraps
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 # Analytics & Request Tracking
 from analytics import tracker, track_request, start_dashboard, ENABLE_DASHBOARD, DASHBOARD_PORT, DASHBOARD_HTML
@@ -512,7 +513,21 @@ def format_search_results(data: dict) -> list:
 # MCP Server
 # ============================================================================
 
-mcp = FastMCP("aljazeera360")
+# Determine transport mode early to configure security settings
+_transport_mode = os.environ.get("MCP_TRANSPORT", "stdio")
+
+# For cloud deployment (SSE), disable DNS rebinding protection
+# since Railway/Cloud Run use their own domain and reverse proxy
+if _transport_mode == "sse":
+    _security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    mcp = FastMCP(
+        "aljazeera360",
+        host="0.0.0.0",
+        port=int(os.environ.get("MCP_PORT", "8080")),
+        transport_security=_security,
+    )
+else:
+    mcp = FastMCP("aljazeera360")
 client = AlJazeera360Client()
 
 
@@ -1048,12 +1063,11 @@ def main():
         logger.info(f"Analytics dashboard also running at http://localhost:{DASHBOARD_PORT}")
     
     if transport == "sse":
-        port = int(os.environ.get("MCP_PORT", "8080"))
+        port = mcp.settings.port
         logger.info(f"Starting Al Jazeera 360 MCP Server (SSE transport on port {port})")
         logger.info(f"Dashboard: http://0.0.0.0:{port}/")
         logger.info(f"MCP SSE:   http://0.0.0.0:{port}/sse")
-        mcp.settings.host = "0.0.0.0"
-        mcp.settings.port = port
+        logger.info("DNS rebinding protection: DISABLED (cloud mode)")
         mcp.run(transport="sse")
     else:
         logger.info("Starting Al Jazeera 360 MCP Server (stdio transport)")
