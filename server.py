@@ -1001,7 +1001,9 @@ def main():
     if transport == "sse":
         port = int(os.environ.get("MCP_PORT", "8080"))
         logger.info(f"Starting Al Jazeera 360 MCP Server (SSE transport on port {port})")
-        mcp.run(transport="sse", host="0.0.0.0", port=port)
+        mcp.settings.host = "0.0.0.0"
+        mcp.settings.port = port
+        mcp.run(transport="sse")
     else:
         logger.info("Starting Al Jazeera 360 MCP Server (stdio transport)")
         mcp.run(transport="stdio")
