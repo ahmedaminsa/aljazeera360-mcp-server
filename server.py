@@ -605,10 +605,31 @@ def format_search_results(data: dict, query: str = "", max_results: int = 20) ->
 # Determine transport mode early to configure security settings
 _transport_mode = os.environ.get("MCP_TRANSPORT", "streamable-http")
 
-# For cloud deployment (Streamable HTTP / SSE), disable DNS rebinding protection
-# since Railway/Cloud Run use their own domain and reverse proxy
+# Configure Transport Security for Cloud Deployment
 if _transport_mode in ("streamable-http", "sse"):
-    _security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    # Configure DNS Rebinding Protection, Allowed Hosts, and Allowed Origins
+    # Re-enabling protection and defining strict allowed hosts/origins for security compliance
+    _allowed_hosts = [
+        "localhost",
+        "127.0.0.1",
+        "aljazeera360-mcp-server-production.up.railway.app", # Railway production domain
+        "aljazeera360-mcp.up.railway.app",
+    ]
+    # Add any custom host from environment if deployed elsewhere
+    _custom_host = os.environ.get("AJ360_ALLOWED_HOST")
+    if _custom_host:
+        _allowed_hosts.append(_custom_host)
+        
+    _security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=_allowed_hosts,
+        allowed_origins=[
+            "http://localhost",
+            "http://127.0.0.1",
+            "https://aljazeera360.com",
+            "https://www.aljazeera360.com",
+        ]
+    )
     mcp = FastMCP(
         "aljazeera360",
         host="0.0.0.0",
@@ -3337,10 +3358,13 @@ PRIVACY_HTML = """<!DOCTYPE html>
     <h2>2. Authentication and Security</h2>
     <p>Any API keys or tokens (such as <code>AJ360_REFRESH_TOKEN</code>) provided to this server are used strictly to authenticate requests with the official Al Jazeera 360 backend on behalf of the user. These tokens are stored securely in your environment variables and are never transmitted to any third party other than Al Jazeera 360.</p>
     
-    <h2>3. Client-Side Analytics</h2>
-    <p>The server includes a local, self-hosted analytics dashboard to monitor request rates and latency. This data is stored entirely in memory within the running container and is lost when the container restarts. No analytics data is sent to external tracking services.</p>
+    <h2>3. Client-Side Analytics & Data Retention</h2>
+    <p>The server includes a local, self-hosted analytics dashboard to monitor request rates and latency. This analytical data is stored entirely in memory within the running container and is completely cleared/deleted when the container restarts. No data is persisted long-term, and no analytics data is ever transmitted to external tracking services or third parties.</p>
     
-    <h2>4. Changes to This Policy</h2>
+    <h2>4. Contact Information</h2>
+    <p>If you have any questions or concerns about this Privacy Policy or how data is handled by this server, please contact us via email at: <a href="mailto:support@aljazeera360.com">support@aljazeera360.com</a> or open an issue in our public GitHub repository.</p>
+
+    <h2>5. Changes to This Policy</h2>
     <p>Since this is an open-source project, any future changes to this policy will be documented in our public GitHub repository. You are encouraged to review this policy periodically.</p>
     
     <footer>
@@ -3484,7 +3508,8 @@ async def api_health(request: Request):
         "transport": _transport_mode,
         "privacy_policy": "/privacy",
         "documentation": "/docs",
-        "dns_protection": mcp.settings.transport_security.enable_dns_rebinding_protection if mcp.settings.transport_security else None,
+        "dns_protection": mcp.settings.transport_security.enable_dns_rebinding_protection if mcp.settings.transport_security else False,
+        "allowed_hosts": mcp.settings.transport_security.allowed_hosts if mcp.settings.transport_security else [],
     })
 
 
@@ -3521,14 +3546,14 @@ def main():
         logger.info(f"Starting Al Jazeera 360 MCP Server (Streamable HTTP transport on port {port})")
         logger.info(f"Dashboard: http://0.0.0.0:{port}/")
         logger.info(f"MCP HTTP:  http://0.0.0.0:{port}/mcp")
-        logger.info("DNS rebinding protection: DISABLED (cloud mode)")
+        logger.info("DNS rebinding protection: ENABLED (allowed_hosts + allowed_origins configured)")
         mcp.run(transport="streamable-http")
     elif transport == "sse":
         port = mcp.settings.port
         logger.info(f"Starting Al Jazeera 360 MCP Server (SSE transport on port {port})")
         logger.info(f"Dashboard: http://0.0.0.0:{port}/")
         logger.info(f"MCP SSE:   http://0.0.0.0:{port}/sse")
-        logger.info("DNS rebinding protection: DISABLED (cloud mode)")
+        logger.info("DNS rebinding protection: ENABLED (allowed_hosts + allowed_origins configured)")
         mcp.run(transport="sse")
     else:
         logger.info("Starting Al Jazeera 360 MCP Server (stdio transport)")
