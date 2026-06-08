@@ -25,7 +25,9 @@ The AI connects to this server, fetches real data from Al Jazeera 360, and retur
 
 ---
 
-## Tools Available
+## Tools Available (24 Tools)
+
+### Core Discovery Tools
 
 | Tool | What It Does |
 | :--- | :--- |
@@ -37,6 +39,32 @@ The AI connects to this server, fetches real data from Al Jazeera 360, and retur
 | `get_season_episodes` | Lists all episodes within a specific season |
 | `search_videos` | Full-text search across all content (Arabic & English), with optional content type filter |
 | `get_latest_episodes` | Returns the most recently published episodes from any section |
+
+### SEO & Metadata Tools
+
+| Tool | What It Does |
+| :--- | :--- |
+| `generate_seo_content` | Generates optimized Arabic titles, descriptions, and keywords for a video |
+| `generate_sitemap` | Generates a Google Search Console-ready Video XML Sitemap (paginated) |
+| `audit_metadata_quality` | Audits catalog health — missing descriptions, thumbnails, and categories (paginated) |
+| `get_trending_topics` | Extracts the top trending keywords and topics across the catalog |
+| `compare_sections` | Compares content freshness and activity across all sections |
+| `get_series_seo_map` | Generates a complete SEO map for a series with all episodes |
+
+### Advanced AI & Analytics Tools
+
+| Tool | What It Does |
+| :--- | :--- |
+| `build_knowledge_graph` | Builds an entity knowledge graph from catalog metadata |
+| `generate_faq_schema` | Generates FAQ Schema JSON-LD for a video |
+| `get_ai_discoverability_score` | Scores how discoverable content is by AI assistants |
+| `build_topic_clusters` | Groups content into SEO topic clusters with pillar and supporting pages |
+| `find_evergreen_content` | Identifies content that stays relevant over time |
+| `get_host_profile` | Generates a Person Schema and profile for a show host |
+| `get_genre_report` | Reports on genre distribution and SEO opportunities |
+| `get_searchable_tags_map` | Maps the most searched keywords across the catalog (paginated) |
+| `get_country_content_map` | Maps content by country for geo-targeted SEO (paginated) |
+| `generate_series_schema` | Generates TVSeries + TVEpisode JSON-LD Schema for a series |
 
 ---
 
@@ -100,7 +128,7 @@ The server supports multiple authentication methods (in priority order):
 python test_server.py
 ```
 
-All 8 tools are tested against the live API. Expected result: `8/8 tests passed`.
+Core tools are tested against the live API.
 
 ### Run
 
@@ -155,7 +183,7 @@ This server uses the standard MCP protocol over `stdio`. It works with any MCP-c
 | `AJ360_REFRESH_TOKEN` | No | — | Long-lived refresh token (~1 year). Best for production. |
 | `AJ360_AUTH_TOKEN` | No | Guest mode | Short-lived auth token (~10 min). Good for quick testing. |
 | `AJ360_API_KEY` | No | Built-in | Platform API key (public, from browser network requests). |
-| `MCP_TRANSPORT` | No | `stdio` | Transport mode: `stdio` (local) or `sse` (cloud). |
+| `MCP_TRANSPORT` | No | `streamable-http` | Transport mode: `stdio` (local), `streamable-http` (cloud, recommended), or `sse` (legacy cloud). |
 | `MCP_PORT` | No | `8080` | Port for SSE transport (cloud deployment). |
 | `AJ360_ENABLE_DASHBOARD` | No | `true` | Enable/disable the analytics dashboard. |
 | `AJ360_DASHBOARD_PORT` | No | `9090` | Port for the analytics dashboard. |
@@ -174,7 +202,7 @@ The server works **without any configuration** in guest mode. For full content a
 
 ```bash
 docker build -t aljazeera360-mcp .
-docker run -p 8080:8080 -e MCP_TRANSPORT=sse -e AJ360_REFRESH_TOKEN=your-token aljazeera360-mcp
+docker run -p 8080:8080 -e MCP_TRANSPORT=streamable-http -e AJ360_REFRESH_TOKEN=your-token aljazeera360-mcp
 ```
 
 ### Google Cloud Run
@@ -185,7 +213,7 @@ gcloud run deploy aljazeera360-mcp \
   --image gcr.io/YOUR_PROJECT/aljazeera360-mcp \
   --platform managed \
   --allow-unauthenticated \
-  --set-env-vars="MCP_TRANSPORT=sse,AJ360_REFRESH_TOKEN=your-token"
+  --set-env-vars="MCP_TRANSPORT=streamable-http,AJ360_REFRESH_TOKEN=your-token"
 ```
 
 ### Render / Railway / Fly.io
@@ -199,7 +227,7 @@ Connect this repo — auto-deploys from the included Dockerfile. Set environment
 ```
 Your AI Assistant
        │
-       │  MCP Protocol (stdio or SSE)
+       │  MCP Protocol (stdio / Streamable HTTP)
        ▼
 ┌──────────────────────────┐
 │  This MCP Server         │
@@ -207,7 +235,7 @@ Your AI Assistant
 │  │ Token Manager      │  │
 │  │ (auto-refresh)     │  │
 │  ├────────────────────┤  │
-│  │ 8 Tools + Prompts  │  │
+│  │ 24 Tools + Prompts │  │
 │  │ + Retry + Cache    │  │
 │  └────────────────────┘  │
 └──────────┬───────────────┘
@@ -300,7 +328,9 @@ For cloud deployments, expose port 9090 alongside the MCP port (8080).
 | `GET /` | Interactive HTML dashboard (auto-refreshes every 10s) |
 | `GET /api/stats` | JSON summary: total requests, tools usage, top searches, daily breakdown |
 | `GET /api/recent` | JSON list of the 50 most recent requests with full details |
-| `GET /api/health` | Health check (`{"status": "ok"}`) |
+| `GET /api/health` | Health check with version, transport, and links to `/privacy` and `/docs` |
+| `GET /privacy` | Privacy Policy page |
+| `GET /docs` | Server documentation page |
 
 ### Configuration
 
@@ -344,7 +374,7 @@ For cloud deployments, expose port 9090 alongside the MCP port (8080).
 | Auth | Firebase JWT (auto-managed with refresh) |
 | Analytics | SQLite + built-in HTTP dashboard |
 | Video Quality | Up to 4K (2160p) |
-| Transport | stdio (local) / SSE (cloud) |
+| Transport | stdio (local) / Streamable HTTP (cloud, recommended) / SSE (legacy) |
 
 ---
 

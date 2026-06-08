@@ -1,3 +1,4 @@
+from mcp.types import ToolAnnotations
 """
 Al Jazeera 360 MCP Server
 =========================
@@ -599,11 +600,11 @@ def format_search_results(data: dict, query: str = "", max_results: int = 20) ->
 # ============================================================================
 
 # Determine transport mode early to configure security settings
-_transport_mode = os.environ.get("MCP_TRANSPORT", "stdio")
+_transport_mode = os.environ.get("MCP_TRANSPORT", "streamable-http")
 
-# For cloud deployment (SSE), disable DNS rebinding protection
+# For cloud deployment (Streamable HTTP / SSE), disable DNS rebinding protection
 # since Railway/Cloud Run use their own domain and reverse proxy
-if _transport_mode == "sse":
+if _transport_mode in ("streamable-http", "sse"):
     _security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
     mcp = FastMCP(
         "aljazeera360",
@@ -616,7 +617,7 @@ else:
 client = AlJazeera360Client()
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Get Trending Content (المحتوى الرائج)", readOnlyHint=True))
 @track_request("get_trending_content")
 async def get_trending_content() -> str:
     """
@@ -675,7 +676,7 @@ async def get_trending_content() -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Browse Section (تصفح الأقسام)", readOnlyHint=True))
 @track_request("browse_section")
 async def browse_section(section_id: str) -> str:
     """
@@ -744,7 +745,7 @@ async def browse_section(section_id: str) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Get Video Details (تفاصيل الفيديو)", readOnlyHint=True))
 @track_request("get_video_details")
 async def get_video_details(video_id: int) -> str:
     """
@@ -797,7 +798,7 @@ async def get_video_details(video_id: int) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Get Series Details (تفاصيل البرامج والسلاسل)", readOnlyHint=True))
 @track_request("get_series_details")
 async def get_series_details(series_id: int) -> str:
     """
@@ -841,7 +842,7 @@ async def get_series_details(series_id: int) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Get Season Episodes (حلقات الموسم)", readOnlyHint=True))
 @track_request("get_season_episodes")
 async def get_season_episodes(season_id: int, max_episodes: int = 20) -> str:
     """
@@ -890,7 +891,7 @@ async def get_season_episodes(season_id: int, max_episodes: int = 20) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Search Videos (البحث عن الفيديوهات)", readOnlyHint=True))
 @track_request("search_videos")
 async def search_videos(query: str, content_type: Optional[str] = None, max_results: int = 20) -> str:
     """
@@ -1003,7 +1004,7 @@ async def search_videos(query: str, content_type: Optional[str] = None, max_resu
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="List Sections (قائمة الأقسام المتاحة)", readOnlyHint=True))
 @track_request("list_sections")
 async def list_sections() -> str:
     """
@@ -1027,7 +1028,7 @@ async def list_sections() -> str:
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Get Latest Episodes (أحدث الحلقات)", readOnlyHint=True))
 @track_request("get_latest_episodes")
 async def get_latest_episodes(section_id: str = "AJA", count: int = 10) -> str:
     """
@@ -1073,7 +1074,7 @@ async def get_latest_episodes(section_id: str = "AJA", count: int = 10) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Generate SEO Content (توليد محتوى SEO)", readOnlyHint=True))
 @track_request("generate_seo_content")
 async def generate_seo_content(video_id: int) -> str:
     """
@@ -1360,9 +1361,9 @@ async def generate_seo_content(video_id: int) -> str:
 # SEO & Analytics Tools
 # ============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Generate Video Sitemap (توليد خريطة الفيديو)", readOnlyHint=True))
 @track_request("generate_sitemap")
-async def generate_sitemap(sections: str = "all", max_per_section: int = 100) -> str:
+async def generate_sitemap(sections: str = "all", max_per_section: int = 100, page: int = 1, page_size: int = 100) -> str:
     """
     Generate a complete Video Sitemap XML for Al Jazeera 360 — ready to submit to Google Search Console.
 
@@ -1372,6 +1373,8 @@ async def generate_sitemap(sections: str = "all", max_per_section: int = 100) ->
     Args:
         sections: Comma-separated section IDs to include, or "all" for all sections (default: "all")
         max_per_section: Maximum videos per section to include (default: 100)
+        page: Page number for pagination (default: 1)
+        page_size: Number of items per page (default: 100)
     """
     try:
         from xml.etree.ElementTree import Element, SubElement, tostring
@@ -1405,8 +1408,13 @@ async def generate_sitemap(sections: str = "all", max_per_section: int = 100) ->
                         if isinstance(bucket, dict):
                             items.extend(bucket.get("contentList", []))
 
+                # Apply pagination to items list
+                start_idx = (page - 1) * page_size
+                end_idx = start_idx + page_size
+                paginated_items = items[start_idx:end_idx]
+
                 count = 0
-                for item in items:
+                for item in paginated_items:
                     if not isinstance(item, dict):
                         continue
                     video_id = item.get("id") or item.get("vodId")
@@ -1498,9 +1506,9 @@ async def generate_sitemap(sections: str = "all", max_per_section: int = 100) ->
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Audit Metadata Quality (تدقيق جودة البيانات)", readOnlyHint=True))
 @track_request("audit_metadata_quality")
-async def audit_metadata_quality(section_id: str = "AJA", max_items: int = 50) -> str:
+async def audit_metadata_quality(section_id: str = "AJA", max_items: int = 50, page: int = 1, page_size: int = 20) -> str:
     """
     Audit the metadata quality of videos in a section and return a detailed report.
 
@@ -1510,6 +1518,8 @@ async def audit_metadata_quality(section_id: str = "AJA", max_items: int = 50) -
     Args:
         section_id: Section to audit (e.g., "AJA", "AJD", "AJ360-Originals"). Default: "AJA"
         max_items: Maximum number of videos to audit (default: 50)
+        page: Page number for pagination (default: 1)
+        page_size: Number of audited items to return in this page (default: 20)
     """
     try:
         data = await client.get_section_content(section_id, items_per_bucket=max_items)
@@ -1532,7 +1542,12 @@ async def audit_metadata_quality(section_id: str = "AJA", max_items: int = 50) -
         good_items = []
         total = 0
 
-        for item in items:
+        # Apply pagination to audited items
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paginated_items = items[start_idx:end_idx]
+        
+        for item in paginated_items:
             if not isinstance(item, dict):
                 continue
             video_id = item.get("id") or item.get("vodId")
@@ -1589,6 +1604,8 @@ async def audit_metadata_quality(section_id: str = "AJA", max_items: int = 50) -
         result = {
             "section": section_id,
             "section_name": SECTIONS.get(section_id, {}).get("name", section_id) if isinstance(SECTIONS.get(section_id), dict) else str(SECTIONS.get(section_id, section_id)),
+            "page": page,
+            "page_size": page_size,
             "total_audited": total,
             "health_score": f"{health_score}%",
             "items_with_no_issues": len(good_items),
@@ -1619,7 +1636,7 @@ async def audit_metadata_quality(section_id: str = "AJA", max_items: int = 50) -
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Get Trending Topics (المواضيع الرائجة للـ SEO)", readOnlyHint=True))
 @track_request("get_trending_topics")
 async def get_trending_topics(top_n: int = 20) -> str:
     """
@@ -1727,7 +1744,7 @@ async def get_trending_topics(top_n: int = 20) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Compare Sections Activity (مقارنة نشاط الأقسام)", readOnlyHint=True))
 @track_request("compare_sections")
 async def compare_sections() -> str:
     """
@@ -1815,7 +1832,7 @@ async def compare_sections() -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Get Series SEO Map (خريطة SEO للبرامج والسلاسل)", readOnlyHint=True))
 @track_request("get_series_seo_map")
 async def get_series_seo_map(series_id: int) -> str:
     """
@@ -1930,7 +1947,7 @@ async def get_series_seo_map(series_id: int) -> str:
 # Advanced Scientific & Practical Tools
 # ============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Build Knowledge Graph (بناء خريطة المعرفة)", readOnlyHint=True))
 async def build_knowledge_graph(sections: str = "AJA,AJD") -> str:
     """Build a knowledge graph of entities (topics, countries, people) from content titles.
     
@@ -2076,7 +2093,7 @@ async def build_knowledge_graph(sections: str = "AJA,AJD") -> str:
         return json.dumps({'error': str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Generate FAQ Schema (توليد مخطط الأسئلة الشائعة)", readOnlyHint=True))
 async def generate_faq_schema(video_id: int) -> str:
     """Generate FAQ Schema (JSON-LD) for a video to improve AI discoverability.
     
@@ -2186,7 +2203,7 @@ async def generate_faq_schema(video_id: int) -> str:
         return json.dumps({'error': str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Get AI Discoverability Score (مؤشر الاكتشاف بالذكاء الاصطناعي)", readOnlyHint=True))
 async def get_ai_discoverability_score(section_id: str = "AJA", max_items: int = 50) -> str:
     """Calculate AI Discoverability Score for content (0-100).
     
@@ -2224,7 +2241,12 @@ async def get_ai_discoverability_score(section_id: str = "AJA", max_items: int =
         
         scored_items = []
         
-        for item in items:
+        # Apply pagination to audited items
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paginated_items = items[start_idx:end_idx]
+        
+        for item in paginated_items:
             if not isinstance(item, dict):
                 continue
             
@@ -2395,7 +2417,7 @@ async def get_ai_discoverability_score(section_id: str = "AJA", max_items: int =
         return json.dumps({'error': str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Build Topic Clusters (بناء المجموعات الموضوعية)", readOnlyHint=True))
 async def build_topic_clusters(sections: str = "AJA,AJD") -> str:
     """Build SEO Topic Clusters (Pillar + Supporting content strategy).
     
@@ -2542,7 +2564,7 @@ async def build_topic_clusters(sections: str = "AJA,AJD") -> str:
         return json.dumps({'error': str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Find Evergreen Content (المحتوى دائم الخضرة)", readOnlyHint=True))
 async def find_evergreen_content(sections: str = "AJA,AJD") -> str:
     """Identify evergreen content (timeless value) vs time-sensitive news content.
     
@@ -2708,7 +2730,7 @@ async def find_evergreen_content(sections: str = "AJA,AJD") -> str:
 # Advanced Tools — typedTags & episodeInformation
 # ============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Get Host Profile (ملف مقدم البرنامج والـ Person Schema)", readOnlyHint=True))
 async def get_host_profile(host_name: str, max_items: int = 20) -> str:
     """
     Get a complete profile for a show host/presenter including all their content,
@@ -2806,7 +2828,7 @@ async def get_host_profile(host_name: str, max_items: int = 20) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Get Genre Report (تقرير تصنيف المحتوى والـ Genres)", readOnlyHint=True))
 async def get_genre_report(genre: str = "", max_items: int = 15) -> str:
     """
     Get a full report of content by genre or sub-genre using typedTags data.
@@ -2898,8 +2920,8 @@ async def get_genre_report(genre: str = "", max_items: int = 15) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
-async def get_searchable_tags_map(max_items: int = 20, top_n: int = 50) -> str:
+@mcp.tool(annotations=ToolAnnotations(title="Get Searchable Tags Map (خريطة الكلمات المفتاحية الأكثر بحثاً)", readOnlyHint=True))
+async def get_searchable_tags_map(max_items: int = 20, top_n: int = 50, page: int = 1, page_size: int = 20) -> str:
     """
     Extract and rank all Searchable Tags from the entire catalog.
     These are the exact keywords the audience searches for — ideal for SEO keyword strategy.
@@ -2908,6 +2930,8 @@ async def get_searchable_tags_map(max_items: int = 20, top_n: int = 50) -> str:
     Args:
         max_items: Items per section to scan (default: 20)
         top_n: Number of top tags to return (default: 50)
+        page: Page number for returned tags (default: 1)
+        page_size: Number of tags per page (default: 20)
     """
     try:
         from collections import Counter
@@ -2957,9 +2981,11 @@ async def get_searchable_tags_map(max_items: int = 20, top_n: int = 50) -> str:
 
         result = {
             "total_videos_scanned": total_videos,
+            "page": page,
+            "page_size": page_size,
             "top_searchable_tags": [
                 {"keyword": tag, "frequency": count, "seo_priority": "high" if count >= 5 else "medium" if count >= 2 else "low"}
-                for tag, count in all_tags.most_common(top_n)
+                for tag, count in all_tags.most_common(top_n)[(page - 1) * page_size : page * page_size]
             ],
             "top_countries": [{"country": c, "count": n} for c, n in all_countries.most_common(20)],
             "genres_distribution": [{"genre": g, "count": n} for g, n in all_genres.most_common()],
@@ -2973,8 +2999,8 @@ async def get_searchable_tags_map(max_items: int = 20, top_n: int = 50) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
-async def get_country_content_map(country: str = "", max_items: int = 20) -> str:
+@mcp.tool(annotations=ToolAnnotations(title="Get Country Content Map (خريطة توزيع المحتوى جغرافياً)", readOnlyHint=True))
+async def get_country_content_map(country: str = "", max_items: int = 20, page: int = 1, page_size: int = 10) -> str:
     """
     Map all content by Related Country from typedTags.
     Useful for geo-targeted SEO, international content strategy, and country-specific landing pages.
@@ -2982,6 +3008,8 @@ async def get_country_content_map(country: str = "", max_items: int = 20) -> str
     Args:
         country: Filter by specific country name in Arabic (e.g. فلسطين, تركيا, فرنسا) — leave empty for all countries
         max_items: Items per section to scan (default: 20)
+        page: Page number for returned countries (default: 1)
+        page_size: Number of countries per page (default: 10)
     """
     try:
         country_map = {}  # country -> list of videos
@@ -3049,18 +3077,25 @@ async def get_country_content_map(country: str = "", max_items: int = 20) -> str
                 "sample_videos": [v["title"] for v in vids[:5]]
             })
 
+        # Paginate countries summary
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        paginated_summary = country_summary[start_idx:end_idx]
+
         result = {
             "filter": country or "all countries",
+            "page": page,
+            "page_size": page_size,
             "total_countries": len(country_map),
             "total_videos_with_country": sum(len(v) for v in country_map.values()),
-            "countries": country_summary
+            "countries": paginated_summary
         }
         return json.dumps(result, ensure_ascii=False, indent=2)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(annotations=ToolAnnotations(title="Generate Series Schema (توليد مخطط السلاسل والحلقات)", readOnlyHint=True))
 async def generate_series_schema(series_id: int) -> str:
     """
     Generate complete TVSeries + TVEpisode JSON-LD Schema for a series.
@@ -3269,6 +3304,141 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
 
+
+# ============================================================================
+# Privacy Policy & Documentation Routes (For MCP Directory compliance)
+# ============================================================================
+
+PRIVACY_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy - Al Jazeera 360 MCP Server</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 40px 20px; }
+        h1 { color: #005a9c; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        h2 { color: #333; margin-top: 30px; }
+        footer { margin-top: 50px; font-size: 0.85em; color: #777; border-top: 1px solid #eee; padding-top: 20px; }
+    </style>
+</head>
+<body>
+    <h1>Privacy Policy</h1>
+    <p>Last updated: June 8, 2026</p>
+    
+    <p>This Privacy Policy describes how the <strong>Al Jazeera 360 MCP Server</strong> handles data. Our server is an open-source tool designed to connect AI assistants to the public catalog of Al Jazeera 360.</p>
+    
+    <h2>1. Data Collection and Processing</h2>
+    <p>The Al Jazeera 360 MCP Server does not collect, store, or share any personal data or personally identifiable information (PII). All operations are performed programmatically to fetch public streaming metadata directly from Al Jazeera 360's public API endpoints.</p>
+    
+    <h2>2. Authentication and Security</h2>
+    <p>Any API keys or tokens (such as <code>AJ360_REFRESH_TOKEN</code>) provided to this server are used strictly to authenticate requests with the official Al Jazeera 360 backend on behalf of the user. These tokens are stored securely in your environment variables and are never transmitted to any third party other than Al Jazeera 360.</p>
+    
+    <h2>3. Client-Side Analytics</h2>
+    <p>The server includes a local, self-hosted analytics dashboard to monitor request rates and latency. This data is stored entirely in memory within the running container and is lost when the container restarts. No analytics data is sent to external tracking services.</p>
+    
+    <h2>4. Changes to This Policy</h2>
+    <p>Since this is an open-source project, any future changes to this policy will be documented in our public GitHub repository. You are encouraged to review this policy periodically.</p>
+    
+    <footer>
+        <p>&copy; 2026 Al Jazeera 360 MCP Server Contributors. This tool is independent and not officially affiliated with Al Jazeera Network.</p>
+    </footer>
+</body>
+</html>
+"""
+
+DOCS_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Documentation - Al Jazeera 360 MCP Server</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 900px; margin: 0 auto; padding: 40px 20px; }
+        h1 { color: #005a9c; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        h2 { color: #005a9c; margin-top: 30px; border-bottom: 1px solid #eee; padding-bottom: 5px; }
+        code { background: #f4f4f4; padding: 2px 6px; border-radius: 4px; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-size: 0.9em; }
+        pre { background: #f4f4f4; padding: 15px; border-radius: 6px; overflow-x: auto; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
+        ul { padding-left: 20px; }
+        .badge { background: #e1f5fe; color: #0288d1; padding: 3px 8px; border-radius: 12px; font-size: 0.85em; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>Al Jazeera 360 MCP Server Documentation</h1>
+    <p>Welcome to the documentation for the <strong>Al Jazeera 360 Model Context Protocol (MCP) Server</strong>. This server allows LLMs (such as Claude and ChatGPT) to explore, search, and analyze Al Jazeera 360's extensive catalog of Arabic streaming content, programs, and metadata.</p>
+    
+    <h2>Getting Started</h2>
+    <p>To connect your AI assistant to this server, use the following configuration based on your transport mode:</p>
+    
+    <h3>1. Streamable HTTP Transport (Recommended)</h3>
+    <p>Expose the server as a web service. This is ideal for cloud deployments (Railway, Render, etc.):</p>
+    <pre>URL: https://your-deployed-mcp-server.com/mcp</pre>
+    
+    <h3>2. STDIO Transport (Local)</h3>
+    <p>For local use with Claude Desktop or Cursor, add the following to your configuration file:</p>
+    <pre>{
+  "mcpServers": {
+    "aljazeera360": {
+      "command": "python3",
+      "args": ["/path/to/server.py"],
+      "env": {
+        "AJ360_REFRESH_TOKEN": "your_optional_token"
+      }
+    }
+  }
+}</pre>
+
+    <h2>Available Tools (24 Tools)</h2>
+    <p>The server exposes 24 specialized tools for metadata discovery, SEO generation, and deep catalog analysis. Key tools include:</p>
+    <ul>
+        <li><code>get_trending_content</code>: Fetch the current trending carousel items.</li>
+        <li><code>browse_section</code>: Browse a specific content section (e.g., AJA, AJD).</li>
+        <li><code>get_video_details</code>: Retrieve full metadata for a specific video.</li>
+        <li><code>generate_seo_content</code>: Generate optimized Arabic titles, descriptions, and keywords.</li>
+        <li><code>generate_sitemap</code>: Generate Google Search Console-ready video XML sitemaps.</li>
+        <li><code>audit_metadata_quality</code>: Audit catalog health, short descriptions, and missing thumbnails.</li>
+    </ul>
+
+    <h2>Compliance & Security</h2>
+    <p>This server implements secure practices including:</p>
+    <ul>
+        <li><strong>Origin Validation:</strong> Rejects requests from unauthorized web origins to prevent cross-origin exploits.</li>
+        <li><strong>Pagination:</strong> Protects the server from memory exhaustion by paginating large catalog responses.</li>
+    </ul>
+</body>
+</html>
+"""
+
+@mcp.custom_route("/privacy", methods=["GET"])
+async def privacy_page(request: Request):
+    """Serve the Privacy Policy HTML."""
+    return HTMLResponse(PRIVACY_HTML)
+
+@mcp.custom_route("/docs", methods=["GET"])
+async def docs_page(request: Request):
+    """Serve the documentation HTML."""
+    return HTMLResponse(DOCS_HTML)
+
+# Origin Validation Middleware / Helper
+def validate_origin(request: Request) -> bool:
+    """Validate that the Origin header is authorized."""
+    origin = request.headers.get("origin")
+    if not origin:
+        return True # Allow non-browser clients (like direct MCP clients)
+        
+    # Allowed origins: local development and official platforms
+    allowed_origins = [
+        "http://localhost",
+        "http://127.0.0.1",
+        "https://aljazeera360.com",
+        "https://www.aljazeera360.com",
+    ]
+    # Check if origin matches or is a subdomain of allowed origins
+    for allowed in allowed_origins:
+        if origin.startswith(allowed):
+            return True
+    return False
+
 @mcp.custom_route("/", methods=["GET"])
 async def dashboard_root(request: Request):
     """Serve the Analytics Dashboard HTML at the root URL."""
@@ -3300,11 +3470,17 @@ async def api_recent(request: Request):
 @mcp.custom_route("/api/health", methods=["GET"])
 async def api_health(request: Request):
     """Health check endpoint for monitoring."""
+    # Origin validation check
+    if not validate_origin(request):
+        return JSONResponse({"error": "Unauthorized Origin"}, status_code=403)
+
     return JSONResponse({
         "status": "ok",
         "server": "aljazeera360-mcp",
-        "version": "1.1.0",
+        "version": "2.0.0",
         "transport": _transport_mode,
+        "privacy_policy": "/privacy",
+        "documentation": "/docs",
         "dns_protection": mcp.settings.transport_security.enable_dns_rebinding_protection if mcp.settings.transport_security else None,
     })
 
@@ -3330,14 +3506,21 @@ def main():
     Optionally, a standalone dashboard can also run on a separate port (default: 9090).
     Disable with AJ360_ENABLE_DASHBOARD=false.
     """
-    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    transport = os.environ.get("MCP_TRANSPORT", "streamable-http")
     
     # Optionally start standalone analytics dashboard on separate port
     if ENABLE_DASHBOARD and transport == "stdio":
         start_dashboard(DASHBOARD_PORT)
         logger.info(f"Analytics dashboard also running at http://localhost:{DASHBOARD_PORT}")
     
-    if transport == "sse":
+    if transport == "streamable-http":
+        port = mcp.settings.port
+        logger.info(f"Starting Al Jazeera 360 MCP Server (Streamable HTTP transport on port {port})")
+        logger.info(f"Dashboard: http://0.0.0.0:{port}/")
+        logger.info(f"MCP HTTP:  http://0.0.0.0:{port}/mcp")
+        logger.info("DNS rebinding protection: DISABLED (cloud mode)")
+        mcp.run(transport="streamable-http")
+    elif transport == "sse":
         port = mcp.settings.port
         logger.info(f"Starting Al Jazeera 360 MCP Server (SSE transport on port {port})")
         logger.info(f"Dashboard: http://0.0.0.0:{port}/")

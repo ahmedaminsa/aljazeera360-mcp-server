@@ -13,8 +13,8 @@ COPY analytics.py .
 # Expose ports: MCP server + Analytics dashboard
 EXPOSE 8080 9090
 
-# Default to HTTP transport for cloud deployment
-ENV MCP_TRANSPORT=sse
+# Default to Streamable HTTP transport for cloud deployment
+ENV MCP_TRANSPORT=streamable-http
 ENV MCP_PORT=8080
 ENV AJ360_ENABLE_DASHBOARD=true
 ENV AJ360_DASHBOARD_PORT=9090
