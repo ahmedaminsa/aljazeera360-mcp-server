@@ -13,7 +13,7 @@ spec = importlib.util.spec_from_file_location("server", "/home/ubuntu/aljazeera3
 import httpx
 
 API_BASE = "https://dce-frontoffice.imggaming.com"
-API_KEY = "REDACTED_API_KEY"
+API_KEY = os.environ.get("AJ360_API_KEY", "")  # Set AJ360_API_KEY env var
 REALM = "dce.aljazeera"
 
 async def test_guest_token():

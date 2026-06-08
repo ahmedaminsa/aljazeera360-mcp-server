@@ -5,16 +5,16 @@ Connects via SSE and calls tools to generate analytics data.
 import asyncio
 import json
 from mcp import ClientSession
-from mcp.client.sse import sse_client
+from mcp.client.streamable_http import streamablehttp_client
 
-SERVER_URL = "https://aljazeera360-mcp-server-production.up.railway.app/sse"
+SERVER_URL = "https://aljazeera360-mcp-server-production.up.railway.app/mcp"
 
 
 async def main():
     print(f"Connecting to: {SERVER_URL}")
     print("=" * 60)
     
-    async with sse_client(SERVER_URL) as (read_stream, write_stream):
+    async with streamablehttp_client(SERVER_URL) as (read_stream, write_stream):
         async with ClientSession(read_stream, write_stream) as session:
             # Initialize
             await session.initialize()

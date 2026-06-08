@@ -6,7 +6,7 @@ import json
 import subprocess
 
 API_BASE = "https://dce-frontoffice.imggaming.com"
-API_KEY = os.environ.get("AJ360_API_KEY", "REDACTED_API_KEY")
+API_KEY = os.environ.get("AJ360_API_KEY", "")  # Set AJ360_API_KEY env var
 REALM = "dce.aljazeera"
 
 async def get_token():
