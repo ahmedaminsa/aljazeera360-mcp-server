@@ -29,13 +29,19 @@ jobs:
       - name: Verify server imports
         run: python -c "from server import mcp, AlJazeera360Client, TokenManager; print('✅ All imports OK')"
 
-      - name: Verify tools registered
+      - name: Verify tool profiles
         run: |
           python -c "
           from server import mcp
           tools = mcp._tool_manager._tools if hasattr(mcp, '_tool_manager') else {}
-          print(f'✅ {len(tools)} tools registered')
-          assert len(tools) >= 8, f'Expected 8+ tools, got {len(tools)}'
+          print(f'✅ default profile: {len(tools)} tools registered')
+          assert len(tools) == 8, f'Default profile: expected 8 core tools, got {len(tools)}'
+          "
+          AJ360_ENABLE_SEO_TOOLS=1 python -c "
+          from server import mcp
+          tools = mcp._tool_manager._tools if hasattr(mcp, '_tool_manager') else {}
+          print(f'✅ full profile: {len(tools)} tools registered')
+          assert len(tools) == 24, f'Full profile: expected 24 tools, got {len(tools)}'
           "
 
       - name: Run integration tests

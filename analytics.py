@@ -354,7 +354,31 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 ]);
                 const stats = await statsRes.json();
                 const recent = await recentRes.json();
-                
+
+                if (stats.total_requests === 0) {
+                    document.getElementById('dashboard').innerHTML = `
+                        <div class="section" style="text-align:center;padding:48px 24px">
+                            <h2 style="border:none;font-size:20px">📊 No requests tracked yet</h2>
+                            <p style="color:#94a3b8;max-width:600px;margin:12px auto 4px">
+                                Stats will appear here the moment an AI assistant calls one of this server's tools.
+                                Connect a client to get started — add this to your MCP client config:
+                            </p>
+                            <pre style="text-align:left;display:inline-block;background:#0f172a;border:1px solid #1e293b;padding:16px 20px;border-radius:8px;margin-top:16px;font-size:13px;color:#7dd3fc">{
+  "mcpServers": {
+    "aljazeera360": {
+      "type": "http",
+      "url": "${location.origin}/mcp"
+    }
+  }
+}</pre>
+                            <p style="color:#94a3b8;font-size:13px;margin-top:16px">
+                                Then ask your assistant: <em>"What's trending on Al Jazeera 360?"</em>
+                            </p>
+                            <p style="margin-top:20px;color:#666;font-size:12px">Auto-refreshes every 10 seconds | <button class="refresh-btn" onclick="loadDashboard()">Refresh Now</button></p>
+                        </div>`;
+                    return;
+                }
+
                 let html = '';
                 
                 // Summary cards

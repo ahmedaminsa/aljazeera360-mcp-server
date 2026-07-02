@@ -1,0 +1,51 @@
+name: Live API Check
+
+# Daily smoke test against the real Al Jazeera 360 API and the Railway deployment.
+# The upstream Vesper/Dice API is reverse-engineered and can change without notice
+# (it already did once — see commit history). A failing run here means the server
+# is likely broken for users; GitHub emails the repo owner on scheduled-run failures.
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # daily at 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  live-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run live API smoke test
+        env:
+          AJ360_API_KEY: ${{ secrets.AJ360_API_KEY }}
+          AJ360_REFRESH_TOKEN: ${{ secrets.AJ360_REFRESH_TOKEN }}
+        run: python test_server.py
+
+  deployment-health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Railway deployment health
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" https://aljazeera360-mcp-server-production.up.railway.app/api/health)
+          echo "Health endpoint returned HTTP $code"
+          test "$code" = "200"
+
+      - name: Check MCP endpoint responds
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST https://aljazeera360-mcp-server-production.up.railway.app/mcp \
+            -H "Accept: application/json, text/event-stream" \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"live-check","version":"1.0"}}}')
+          echo "MCP initialize returned HTTP $code"
+          test "$code" = "200"

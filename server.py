@@ -640,6 +640,29 @@ else:
     mcp = FastMCP("aljazeera360")
 client = AlJazeera360Client()
 
+# ----------------------------------------------------------------------------
+# Tool Profiles
+# ----------------------------------------------------------------------------
+# The 8 core discovery tools are always registered. The 16 SEO/analytics tools
+# target content teams rather than end users, and a small default toolset keeps
+# AI tool selection accurate — so they are opt-in via AJ360_ENABLE_SEO_TOOLS.
+SEO_TOOLS_ENABLED = os.environ.get("AJ360_ENABLE_SEO_TOOLS", "").strip().lower() in ("1", "true", "yes")
+
+
+def seo_tool(*args, **kwargs):
+    """Like @mcp.tool(), but only registers the tool when AJ360_ENABLE_SEO_TOOLS is set.
+
+    The decorated function is always returned unchanged, so direct imports
+    (e.g. from tests or examples) work in both profiles.
+    """
+    if SEO_TOOLS_ENABLED:
+        return mcp.tool(*args, **kwargs)
+
+    def _unregistered(fn):
+        return fn
+
+    return _unregistered
+
 
 @mcp.tool(annotations=ToolAnnotations(title="Get Trending Content (المحتوى الرائج)", readOnlyHint=True))
 @track_request("get_trending_content")
@@ -1098,7 +1121,7 @@ async def get_latest_episodes(section_id: str = "AJA", count: int = 10) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Generate SEO Content (توليد محتوى SEO)", readOnlyHint=True))
+@seo_tool(annotations=ToolAnnotations(title="Generate SEO Content (توليد محتوى SEO)", readOnlyHint=True))
 @track_request("generate_seo_content")
 async def generate_seo_content(video_id: int) -> str:
     """
@@ -1385,7 +1408,7 @@ async def generate_seo_content(video_id: int) -> str:
 # SEO & Analytics Tools
 # ============================================================================
 
-@mcp.tool(annotations=ToolAnnotations(title="Generate Video Sitemap (توليد خريطة الفيديو)", readOnlyHint=True))
+@seo_tool(annotations=ToolAnnotations(title="Generate Video Sitemap (توليد خريطة الفيديو)", readOnlyHint=True))
 @track_request("generate_sitemap")
 async def generate_sitemap(sections: str = "all", max_per_section: int = 100, page: int = 1, page_size: int = 100) -> str:
     """
@@ -1530,7 +1553,7 @@ async def generate_sitemap(sections: str = "all", max_per_section: int = 100, pa
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Audit Metadata Quality (تدقيق جودة البيانات)", readOnlyHint=True))
+@seo_tool(annotations=ToolAnnotations(title="Audit Metadata Quality (تدقيق جودة البيانات)", readOnlyHint=True))
 @track_request("audit_metadata_quality")
 async def audit_metadata_quality(section_id: str = "AJA", max_items: int = 50, page: int = 1, page_size: int = 20) -> str:
     """
@@ -1660,7 +1683,7 @@ async def audit_metadata_quality(section_id: str = "AJA", max_items: int = 50, p
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Trending Topics (المواضيع الرائجة للـ SEO)", readOnlyHint=True))
+@seo_tool(annotations=ToolAnnotations(title="Get Trending Topics (المواضيع الرائجة للـ SEO)", readOnlyHint=True))
 @track_request("get_trending_topics")
 async def get_trending_topics(top_n: int = 20) -> str:
     """
@@ -1768,7 +1791,7 @@ async def get_trending_topics(top_n: int = 20) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Compare Sections Activity (مقارنة نشاط الأقسام)", readOnlyHint=True))
+@seo_tool(annotations=ToolAnnotations(title="Compare Sections Activity (مقارنة نشاط الأقسام)", readOnlyHint=True))
 @track_request("compare_sections")
 async def compare_sections() -> str:
     """
@@ -1856,7 +1879,7 @@ async def compare_sections() -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Series SEO Map (خريطة SEO للبرامج والسلاسل)", readOnlyHint=True))
+@seo_tool(annotations=ToolAnnotations(title="Get Series SEO Map (خريطة SEO للبرامج والسلاسل)", readOnlyHint=True))
 @track_request("get_series_seo_map")
 async def get_series_seo_map(series_id: int) -> str:
     """
@@ -1971,7 +1994,7 @@ async def get_series_seo_map(series_id: int) -> str:
 # Advanced Scientific & Practical Tools
 # ============================================================================
 
-@mcp.tool(annotations=ToolAnnotations(title="Build Knowledge Graph (بناء خريطة المعرفة)", readOnlyHint=True))
+@seo_tool(annotations=ToolAnnotations(title="Build Knowledge Graph (بناء خريطة المعرفة)", readOnlyHint=True))
 async def build_knowledge_graph(sections: str = "AJA,AJD") -> str:
     """Build a knowledge graph of entities (topics, countries, people) from content titles.
     
@@ -2117,7 +2140,7 @@ async def build_knowledge_graph(sections: str = "AJA,AJD") -> str:
         return json.dumps({'error': str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Generate FAQ Schema (توليد مخطط الأسئلة الشائعة)", readOnlyHint=True))
+@seo_tool(annotations=ToolAnnotations(title="Generate FAQ Schema (توليد مخطط الأسئلة الشائعة)", readOnlyHint=True))
 async def generate_faq_schema(video_id: int) -> str:
     """Generate FAQ Schema (JSON-LD) for a video to improve AI discoverability.
     
@@ -2227,7 +2250,7 @@ async def generate_faq_schema(video_id: int) -> str:
         return json.dumps({'error': str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get AI Discoverability Score (مؤشر الاكتشاف بالذكاء الاصطناعي)", readOnlyHint=True))
+@seo_tool(annotations=ToolAnnotations(title="Get AI Discoverability Score (مؤشر الاكتشاف بالذكاء الاصطناعي)", readOnlyHint=True))
 async def get_ai_discoverability_score(section_id: str = "AJA", max_items: int = 50) -> str:
     """Calculate AI Discoverability Score for content (0-100).
     
@@ -2441,7 +2464,7 @@ async def get_ai_discoverability_score(section_id: str = "AJA", max_items: int =
         return json.dumps({'error': str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Build Topic Clusters (بناء المجموعات الموضوعية)", readOnlyHint=True))
+@seo_tool(annotations=ToolAnnotations(title="Build Topic Clusters (بناء المجموعات الموضوعية)", readOnlyHint=True))
 async def build_topic_clusters(sections: str = "AJA,AJD") -> str:
     """Build SEO Topic Clusters (Pillar + Supporting content strategy).
     
@@ -2588,7 +2611,7 @@ async def build_topic_clusters(sections: str = "AJA,AJD") -> str:
         return json.dumps({'error': str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Find Evergreen Content (المحتوى دائم الخضرة)", readOnlyHint=True))
+@seo_tool(annotations=ToolAnnotations(title="Find Evergreen Content (المحتوى دائم الخضرة)", readOnlyHint=True))
 async def find_evergreen_content(sections: str = "AJA,AJD") -> str:
     """Identify evergreen content (timeless value) vs time-sensitive news content.
     
@@ -2754,7 +2777,7 @@ async def find_evergreen_content(sections: str = "AJA,AJD") -> str:
 # Advanced Tools — typedTags & episodeInformation
 # ============================================================================
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Host Profile (ملف مقدم البرنامج والـ Person Schema)", readOnlyHint=True))
+@seo_tool(annotations=ToolAnnotations(title="Get Host Profile (ملف مقدم البرنامج والـ Person Schema)", readOnlyHint=True))
 async def get_host_profile(host_name: str, max_items: int = 20) -> str:
     """
     Get a complete profile for a show host/presenter including all their content,
@@ -2852,7 +2875,7 @@ async def get_host_profile(host_name: str, max_items: int = 20) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Genre Report (تقرير تصنيف المحتوى والـ Genres)", readOnlyHint=True))
+@seo_tool(annotations=ToolAnnotations(title="Get Genre Report (تقرير تصنيف المحتوى والـ Genres)", readOnlyHint=True))
 async def get_genre_report(genre: str = "", max_items: int = 15) -> str:
     """
     Get a full report of content by genre or sub-genre using typedTags data.
@@ -2944,7 +2967,7 @@ async def get_genre_report(genre: str = "", max_items: int = 15) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Searchable Tags Map (خريطة الكلمات المفتاحية الأكثر بحثاً)", readOnlyHint=True))
+@seo_tool(annotations=ToolAnnotations(title="Get Searchable Tags Map (خريطة الكلمات المفتاحية الأكثر بحثاً)", readOnlyHint=True))
 async def get_searchable_tags_map(max_items: int = 20, top_n: int = 50, page: int = 1, page_size: int = 20) -> str:
     """
     Extract and rank all Searchable Tags from the entire catalog.
@@ -3023,7 +3046,7 @@ async def get_searchable_tags_map(max_items: int = 20, top_n: int = 50, page: in
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Country Content Map (خريطة توزيع المحتوى جغرافياً)", readOnlyHint=True))
+@seo_tool(annotations=ToolAnnotations(title="Get Country Content Map (خريطة توزيع المحتوى جغرافياً)", readOnlyHint=True))
 async def get_country_content_map(country: str = "", max_items: int = 20, page: int = 1, page_size: int = 10) -> str:
     """
     Map all content by Related Country from typedTags.
@@ -3119,7 +3142,7 @@ async def get_country_content_map(country: str = "", max_items: int = 20, page: 
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Generate Series Schema (توليد مخطط السلاسل والحلقات)", readOnlyHint=True))
+@seo_tool(annotations=ToolAnnotations(title="Generate Series Schema (توليد مخطط السلاسل والحلقات)", readOnlyHint=True))
 async def generate_series_schema(series_id: int) -> str:
     """
     Generate complete TVSeries + TVEpisode JSON-LD Schema for a series.

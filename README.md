@@ -10,6 +10,27 @@
 
 An MCP (Model Context Protocol) server that gives AI tools like Claude, ChatGPT, Gemini, and Cursor real-time access to [Al Jazeera 360](https://www.aljazeera360.com)'s full content library: documentaries, investigative programs, talk shows, podcasts, and original productions.
 
+> ⚠️ **Unofficial community project.** Not affiliated with, endorsed by, or sponsored by Al Jazeera Media Network. It uses the platform's publicly accessible API and links back to `aljazeera360.com` for all content.
+
+---
+
+## ⚡ Quick Connect — No Install Needed
+
+A hosted instance is live. Add this to your MCP client config and you're done:
+
+```json
+{
+  "mcpServers": {
+    "aljazeera360": {
+      "type": "http",
+      "url": "https://aljazeera360-mcp-server-production.up.railway.app/mcp"
+    }
+  }
+}
+```
+
+Then ask your assistant: *"What's trending on Al Jazeera 360?"* — or in Arabic: *"ايه أحدث حلقات الدحيح؟"*
+
 ---
 
 ## What It Does
@@ -25,9 +46,18 @@ The AI connects to this server, fetches real data from Al Jazeera 360, and retur
 
 ---
 
-## Tools Available (24 Tools)
+## Tools Available
 
-### Core Discovery Tools
+The server ships with two tool profiles:
+
+| Profile | Tools | For whom | How |
+| :--- | :--- | :--- | :--- |
+| **Core** (default) | 8 discovery tools | End users asking AI assistants about content | Works out of the box |
+| **Full** | All 24 tools (+ SEO & analytics) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
+
+A small default toolset keeps AI tool selection fast and accurate. Enable the full profile only if you need the SEO/analytics tools.
+
+### Core Discovery Tools (always on)
 
 | Tool | What It Does |
 | :--- | :--- |
@@ -40,7 +70,7 @@ The AI connects to this server, fetches real data from Al Jazeera 360, and retur
 | `search_videos` | Full-text search across all content (Arabic & English), with optional content type filter |
 | `get_latest_episodes` | Returns the most recently published episodes from any section |
 
-### SEO & Metadata Tools
+### SEO & Metadata Tools (requires `AJ360_ENABLE_SEO_TOOLS=1`)
 
 | Tool | What It Does |
 | :--- | :--- |
@@ -51,7 +81,7 @@ The AI connects to this server, fetches real data from Al Jazeera 360, and retur
 | `compare_sections` | Compares content freshness and activity across all sections |
 | `get_series_seo_map` | Generates a complete SEO map for a series with all episodes |
 
-### Advanced AI & Analytics Tools
+### Advanced AI & Analytics Tools (requires `AJ360_ENABLE_SEO_TOOLS=1`)
 
 | Tool | What It Does |
 | :--- | :--- |
@@ -185,6 +215,7 @@ This server uses the standard MCP protocol over `stdio`. It works with any MCP-c
 | `AJ360_API_KEY` | No | Built-in | Platform API key (public, from browser network requests). |
 | `MCP_TRANSPORT` | No | `streamable-http` | Transport mode: `stdio` (local), `streamable-http` (cloud, recommended), or `sse` (legacy cloud). |
 | `MCP_PORT` | No | `8080` | Port for SSE transport (cloud deployment). |
+| `AJ360_ENABLE_SEO_TOOLS` | No | off | Set to `1` to register the 16 SEO/analytics tools (full profile). |
 | `AJ360_ENABLE_DASHBOARD` | No | `true` | Enable/disable the analytics dashboard. |
 | `AJ360_DASHBOARD_PORT` | No | `9090` | Port for the analytics dashboard. |
 | `AJ360_ANALYTICS_DB` | No | `analytics.db` | Path to SQLite analytics database. |
