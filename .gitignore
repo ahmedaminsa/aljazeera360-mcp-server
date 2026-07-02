@@ -34,3 +34,6 @@ Thumbs.db
 # Analytics database
 analytics.db
 server.py.bak
+
+# Internal launch notes — keep local, not public
+LAUNCH.md
