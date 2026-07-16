@@ -45,7 +45,7 @@ Issues = "https://github.com/ahmedaminsa/aljazeera360-mcp-server/issues"
 aljazeera360-mcp = "server:main"
 
 [tool.hatch.build.targets.wheel]
-include = ["server.py"]
+include = ["server.py", "analytics.py"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

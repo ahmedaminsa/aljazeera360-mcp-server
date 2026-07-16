@@ -1,4 +1,3 @@
-from mcp.types import ToolAnnotations
 """
 Al Jazeera 360 MCP Server
 =========================
@@ -31,6 +30,7 @@ import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ToolAnnotations
 
 # Analytics & Request Tracking
 from analytics import tracker, track_request, start_dashboard, ENABLE_DASHBOARD, DASHBOARD_PORT, DASHBOARD_HTML
@@ -3475,7 +3475,7 @@ def validate_origin(request: Request) -> bool:
     origin = request.headers.get("origin")
     if not origin:
         return True # Allow non-browser clients (like direct MCP clients)
-        
+
     # Allowed origins: local development and official platforms
     allowed_origins = [
         "http://localhost",
@@ -3488,6 +3488,36 @@ def validate_origin(request: Request) -> bool:
         if origin.startswith(allowed):
             return True
     return False
+
+
+# Optional shared secret for the analytics data endpoints. When set, callers
+# must present it as `Authorization: Bearer <token>` or `?token=<token>`.
+# Strongly recommended for any public (SSE/cloud) deployment, since the
+# analytics endpoints expose request history and search terms.
+DASHBOARD_TOKEN = os.environ.get("AJ360_DASHBOARD_TOKEN", "").strip()
+
+
+def authorize_analytics(request: Request) -> Optional[JSONResponse]:
+    """Guard the analytics data endpoints.
+
+    Returns a JSONResponse to short-circuit with (403) when the request is not
+    authorized, or None when it may proceed. Enforces origin validation and,
+    when AJ360_DASHBOARD_TOKEN is set, a bearer/query token.
+    """
+    if not validate_origin(request):
+        return JSONResponse({"error": "Unauthorized Origin"}, status_code=403)
+
+    if DASHBOARD_TOKEN:
+        provided = ""
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            provided = auth_header[7:].strip()
+        if not provided:
+            provided = request.query_params.get("token", "").strip()
+        if provided != DASHBOARD_TOKEN:
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
+
+    return None
 
 @mcp.custom_route("/", methods=["GET"])
 async def dashboard_root(request: Request):
@@ -3504,17 +3534,23 @@ async def dashboard_page(request: Request):
 @mcp.custom_route("/api/stats", methods=["GET"])
 async def api_stats(request: Request):
     """Return analytics stats as JSON."""
+    denied = authorize_analytics(request)
+    if denied is not None:
+        return denied
     days = int(request.query_params.get("days", "7"))
     stats = tracker.get_stats(days=days)
-    return JSONResponse(stats, headers={"Access-Control-Allow-Origin": "*"})
+    return JSONResponse(stats)
 
 
 @mcp.custom_route("/api/recent", methods=["GET"])
 async def api_recent(request: Request):
     """Return recent requests as JSON."""
+    denied = authorize_analytics(request)
+    if denied is not None:
+        return denied
     limit = int(request.query_params.get("limit", "50"))
     recent = tracker.get_recent_requests(limit=limit)
-    return JSONResponse(recent, headers={"Access-Control-Allow-Origin": "*"})
+    return JSONResponse(recent)
 
 
 @mcp.custom_route("/api/health", methods=["GET"])
