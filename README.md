@@ -252,6 +252,10 @@ gcloud run deploy aljazeera360-mcp \
 
 Connect this repo — auto-deploys from the included Dockerfile. Set environment variables in the dashboard.
 
+### Cloudflare (Containers)
+
+Full walkthrough in [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md) — wraps the same Dockerfile in a Cloudflare Container behind a tiny Worker. Requires the Workers Paid plan and local Docker for deploys.
+
 ---
 
 ## How It Works
