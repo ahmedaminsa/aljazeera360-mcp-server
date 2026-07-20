@@ -190,6 +190,12 @@ class TokenManager:
                     return True
                 else:
                     logger.warning(f"Token refresh returned {resp.status_code}: {resp.text[:100]}")
+                    if resp.status_code == 400:
+                        # Invalid/expired refresh token — drop it (including the
+                        # persisted copy) so cold starts fall straight through to
+                        # a fresh guest session instead of failing every time.
+                        self._refresh_token = None
+                        self._clear_persisted_refresh_token()
                     return False
             except Exception as e:
                 logger.error(f"Failed to refresh token: {e}")
@@ -258,7 +264,7 @@ class TokenManager:
     
     def _persist_refresh_token(self, token: str):
         """Persist rotated refresh token to disk so it survives restarts.
-        
+
         Writes to .refresh_token in the working directory. This file is
         gitignored. If writing fails (e.g., read-only filesystem), the
         server continues with the in-memory token.
@@ -270,6 +276,17 @@ class TokenManager:
             logger.debug("Persisted rotated refresh token to disk")
         except OSError:
             pass  # Read-only filesystem (e.g., Docker), skip silently
+
+    @staticmethod
+    def _clear_persisted_refresh_token():
+        """Remove the persisted refresh token (e.g., after the API rejects it)."""
+        try:
+            token_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".refresh_token")
+            if os.path.exists(token_path):
+                os.remove(token_path)
+                logger.info("Removed invalid persisted refresh token")
+        except OSError:
+            pass
 
 
 # ============================================================================
@@ -614,25 +631,33 @@ _transport_mode = os.environ.get("MCP_TRANSPORT", "streamable-http")
 if _transport_mode in ("streamable-http", "sse"):
     # Configure DNS Rebinding Protection, Allowed Hosts, and Allowed Origins
     # Re-enabling protection and defining strict allowed hosts/origins for security compliance
+    # NOTE: the MCP SDK matches Host headers EXACTLY, or via explicit "host:*"
+    # port wildcards. A bare "localhost" entry does NOT match "localhost:8080",
+    # so every entry needs its ":*" twin or clients get 421 Misdirected Request.
     _allowed_hosts = [
-        "localhost",
-        "127.0.0.1",
-        "aljazeera360-mcp-server-production.up.railway.app", # Railway production domain
+        "localhost", "localhost:*",
+        "127.0.0.1", "127.0.0.1:*",
+        "aljazeera360-mcp-server-production.up.railway.app",  # Railway production domain
+        "aljazeera360-mcp-server-production.up.railway.app:*",
         "aljazeera360-mcp.up.railway.app",
+        "aljazeera360-mcp.up.railway.app:*",
     ]
     # Add any custom host from environment if deployed elsewhere
     _custom_host = os.environ.get("AJ360_ALLOWED_HOST")
     if _custom_host:
-        _allowed_hosts.append(_custom_host)
-        
+        _allowed_hosts.extend([_custom_host, f"{_custom_host}:*"])
+
     _security = TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=_allowed_hosts,
         allowed_origins=[
-            "http://localhost",
-            "http://127.0.0.1",
+            "http://localhost", "http://localhost:*",
+            "http://127.0.0.1", "http://127.0.0.1:*",
             "https://aljazeera360.com",
             "https://www.aljazeera360.com",
+            # AI clients that connect via remote MCP connectors
+            "https://claude.ai",
+            "https://claude.com",
         ]
     )
     mcp = FastMCP(
