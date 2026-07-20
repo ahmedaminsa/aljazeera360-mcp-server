@@ -40,3 +40,7 @@ LAUNCH.md
 
 # Internal marketing drafts — keep local, not public
 marketing/
+
+# Cloudflare deploy tooling (deploy/cloudflare)
+node_modules/
+.wrangler/
