@@ -304,14 +304,18 @@ class AlJazeera360Client:
             headers["Authorization"] = f"Bearer {token}"
         return headers
     
+    # The Dice API rejects rpp values above 25 with 400 Bad Request.
+    MAX_ITEMS_PER_BUCKET = 25
+
     @api_retry
     @ttl_cache(ttl_seconds=120)
     async def get_home_content(self, items_per_bucket: int = 12) -> dict:
         """Get the home page content with all buckets.
-        
+
         Tested: Returns heroes[], buckets[] with contentList[] containing
         VOD and VOD_SERIES items.
         """
+        items_per_bucket = min(items_per_bucket, self.MAX_ITEMS_PER_BUCKET)
         token = await self.token_manager.get_token()
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(
@@ -336,9 +340,10 @@ class AlJazeera360Client:
     @ttl_cache(ttl_seconds=300)
     async def get_section_content(self, section_id: str, items_per_bucket: int = 12) -> dict:
         """Get content for a specific section/channel.
-        
+
         Tested: Works with all section IDs listed in SECTIONS dict.
         """
+        items_per_bucket = min(items_per_bucket, self.MAX_ITEMS_PER_BUCKET)
         token = await self.token_manager.get_token()
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(
@@ -639,6 +644,30 @@ if _transport_mode in ("streamable-http", "sse"):
 else:
     mcp = FastMCP("aljazeera360")
 client = AlJazeera360Client()
+
+
+async def _enrich_with_vod_details(items: list, limit: Optional[int] = None) -> list:
+    """Merge full VOD details into section-list items.
+
+    Section list payloads do NOT include publishedDate or categories — those
+    fields only exist on /api/v4/vod/{id}. Tools that score metadata quality or
+    freshness must enrich items first or they report false "missing" issues.
+    get_vod_details is TTL-cached, so repeated enrichment is cheap within a run.
+    """
+    enriched = []
+    for item in (items if limit is None else items[:limit]):
+        if not isinstance(item, dict):
+            continue
+        vid = item.get("id") or item.get("vodId")
+        if vid and item.get("type") != "VOD_SERIES":
+            try:
+                vod = await client.get_vod_details(vid)
+                if isinstance(vod, dict):
+                    item = {**item, **{k: v for k, v in vod.items() if v is not None}}
+            except Exception:
+                pass  # keep the plain list item
+        enriched.append(item)
+    return enriched
 
 # ----------------------------------------------------------------------------
 # Tool Profiles
@@ -1589,11 +1618,13 @@ async def audit_metadata_quality(section_id: str = "AJA", max_items: int = 50, p
         good_items = []
         total = 0
 
-        # Apply pagination to audited items
+        # Apply pagination, then enrich: list payloads lack publishedDate and
+        # categories, so auditing them directly reports false "missing" issues.
         start_idx = (page - 1) * page_size
         end_idx = start_idx + page_size
-        paginated_items = items[start_idx:end_idx]
-        
+        paginated_items = items[start_idx:end_idx][:max_items]
+        paginated_items = await _enrich_with_vod_details(paginated_items)
+
         for item in paginated_items:
             if not isinstance(item, dict):
                 continue
@@ -1722,6 +1753,10 @@ async def get_trending_topics(top_n: int = 20) -> str:
         recent_titles = []
         total_items = 0
 
+        # Categories and publishedDate only exist in full VOD details; enrich a
+        # sample so category counts and the last-7-days signal are real.
+        all_items = await _enrich_with_vod_details(all_items, limit=25) + all_items[25:]
+
         for item in all_items:
             if not isinstance(item, dict):
                 continue
@@ -1820,9 +1855,10 @@ async def compare_sections() -> str:
                 has_fhd = sum(1 for h in heights if 1080 <= h < 2160)
                 has_hd = sum(1 for h in heights if 720 <= h < 1080)
 
-                # Find most recent item
+                # Find most recent item. publishedDate is absent from list
+                # payloads, so enrich a small sample with full VOD details.
                 dates = []
-                for i in items:
+                for i in await _enrich_with_vod_details(items, limit=5):
                     if isinstance(i, dict) and i.get("publishedDate"):
                         try:
                             d = datetime.datetime.fromisoformat(i["publishedDate"].replace("Z", "+00:00"))
@@ -2251,7 +2287,7 @@ async def generate_faq_schema(video_id: int) -> str:
 
 
 @seo_tool(annotations=ToolAnnotations(title="Get AI Discoverability Score (مؤشر الاكتشاف بالذكاء الاصطناعي)", readOnlyHint=True))
-async def get_ai_discoverability_score(section_id: str = "AJA", max_items: int = 50) -> str:
+async def get_ai_discoverability_score(section_id: str = "AJA", max_items: int = 50, page: int = 1, page_size: int = 50) -> str:
     """Calculate AI Discoverability Score for content (0-100).
     
     Measures how well each video can be discovered and cited by AI systems
@@ -2285,14 +2321,16 @@ async def get_ai_discoverability_score(section_id: str = "AJA", max_items: int =
         
         if not items:
             return json.dumps({'error': f'No content found in section {section_id}'}, ensure_ascii=False)
-        
+
         scored_items = []
-        
-        # Apply pagination to audited items
+
+        # Apply pagination, then enrich: list payloads lack publishedDate and
+        # categories, which several scoring criteria depend on.
         start_idx = (page - 1) * page_size
         end_idx = start_idx + page_size
-        paginated_items = items[start_idx:end_idx]
-        
+        paginated_items = items[start_idx:end_idx][:max_items]
+        paginated_items = await _enrich_with_vod_details(paginated_items)
+
         for item in paginated_items:
             if not isinstance(item, dict):
                 continue
@@ -3563,7 +3601,7 @@ async def api_health(request: Request):
     return JSONResponse({
         "status": "ok",
         "server": "aljazeera360-mcp",
-        "version": "2.0.0",
+        "version": "2.0.1",
         "transport": _transport_mode,
         "privacy_policy": "/privacy",
         "documentation": "/docs",
