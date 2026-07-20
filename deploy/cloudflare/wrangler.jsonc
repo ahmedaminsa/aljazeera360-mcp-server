@@ -5,6 +5,8 @@
   "name": "aljazeera360-mcp",
   "main": "src/index.js",
   "compatibility_date": "2026-06-01",
+  // Serve on the account's workers.dev subdomain
+  "workers_dev": true,
   "containers": [
     {
       "class_name": "AJ360Container",
@@ -32,8 +34,10 @@
   "vars": {
     // MUST match the public hostname of this Worker, or the server's
     // DNS-rebinding protection rejects requests with 421.
-    // After first deploy, set this to "aljazeera360-mcp.<your-subdomain>.workers.dev"
-    // (or your custom domain) and deploy again.
-    "AJ360_ALLOWED_HOST": "CHANGE-ME.workers.dev"
+    // If you use a custom domain later, change this and deploy again.
+    "AJ360_ALLOWED_HOST": "aljazeera360-mcp.ahmed-26d.workers.dev",
+    // Full 24-tool profile (SEO + analytics tools), matching the previous
+    // Railway deployment the claude.ai connector was built around.
+    "AJ360_ENABLE_SEO_TOOLS": "1"
   }
 }
