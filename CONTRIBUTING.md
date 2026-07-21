@@ -18,7 +18,7 @@ pip install -e ".[dev]"  # installs pytest for development
 python test_server.py
 ```
 
-All 8 tools are tested end-to-end against the production API. Set `AJ360_REFRESH_TOKEN` environment variable for authenticated access.
+The 8 core tools are tested end-to-end against the production API. Set `AJ360_REFRESH_TOKEN` environment variable for authenticated access. The 16 optional SEO/analytics tools are registered only when `AJ360_ENABLE_SEO_TOOLS=1` (24 tools total).
 
 ## Making Changes
 

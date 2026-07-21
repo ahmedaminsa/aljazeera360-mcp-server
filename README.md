@@ -212,12 +212,13 @@ This server uses the standard MCP protocol over `stdio`. It works with any MCP-c
 | :--- | :--- | :--- | :--- |
 | `AJ360_REFRESH_TOKEN` | No | — | Long-lived refresh token (~1 year). Best for production. |
 | `AJ360_AUTH_TOKEN` | No | Guest mode | Short-lived auth token (~10 min). Good for quick testing. |
-| `AJ360_API_KEY` | No | Built-in | Platform API key (public, from browser network requests). |
+| `AJ360_API_KEY` | Yes | — | Platform API key (public, from browser network requests). No default is bundled — you must provide it. |
 | `MCP_TRANSPORT` | No | `streamable-http` | Transport mode: `stdio` (local), `streamable-http` (cloud, recommended), or `sse` (legacy cloud). |
 | `MCP_PORT` | No | `8080` | Port for SSE transport (cloud deployment). |
 | `AJ360_ENABLE_SEO_TOOLS` | No | off | Set to `1` to register the 16 SEO/analytics tools (full profile). |
 | `AJ360_ENABLE_DASHBOARD` | No | `true` | Enable/disable the analytics dashboard. |
 | `AJ360_DASHBOARD_PORT` | No | `9090` | Port for the analytics dashboard. |
+| `AJ360_DASHBOARD_TOKEN` | No | — | Shared secret for the analytics data endpoints (`/api/stats`, `/api/recent`). When set, callers must send `Authorization: Bearer <token>` or `?token=<token>`. **Strongly recommended for any public/cloud deployment.** |
 | `AJ360_ANALYTICS_DB` | No | `analytics.db` | Path to SQLite analytics database. |
 
 The server works **without any configuration** in guest mode. For full content access, provide a refresh token.
@@ -250,6 +251,10 @@ gcloud run deploy aljazeera360-mcp \
 ### Render / Railway / Fly.io
 
 Connect this repo — auto-deploys from the included Dockerfile. Set environment variables in the dashboard.
+
+### Cloudflare (Containers)
+
+Full walkthrough in [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md) — wraps the same Dockerfile in a Cloudflare Container behind a tiny Worker. Requires the Workers Paid plan and local Docker for deploys.
 
 ---
 
@@ -369,6 +374,7 @@ For cloud deployments, expose port 9090 alongside the MCP port (8080).
 | :--- | :--- | :--- |
 | `AJ360_ENABLE_DASHBOARD` | `true` | Set to `false` to disable the dashboard |
 | `AJ360_DASHBOARD_PORT` | `9090` | Port for the analytics HTTP server |
+| `AJ360_DASHBOARD_TOKEN` | — | Shared secret required to read `/api/stats` and `/api/recent`. Set this on any public deployment. |
 | `AJ360_ANALYTICS_DB` | `analytics.db` | SQLite database file path |
 
 ### Example Stats Output
@@ -398,7 +404,7 @@ For cloud deployments, expose port 9090 alongside the MCP port (8080).
 
 | Component | Technology |
 | :--- | :--- |
-| Language | Python 3.11+ |
+| Language | Python 3.10+ |
 | MCP SDK | `mcp` (Anthropic official) |
 | HTTP | `httpx` (async) |
 | Retry | `tenacity` (exponential backoff) |
@@ -414,6 +420,23 @@ For cloud deployments, expose port 9090 alongside the MCP port (8080).
 MIT
 
 ---
+
+## SEO Ops & Vesper Knowledge Base (AI-assisted)
+
+This repo doubles as an AI-assisted SEO operations workspace for the platform.
+Open it in [Claude Code](https://claude.com/claude-code) and you get:
+
+| Piece | What it does |
+| :--- | :--- |
+| `.claude/agents/onvesper-expert.md` | Expert agent on the Vesper/Deltatre platform that powers aljazeera360.com — ask it anything about Back Office, DVE, licences, advertising, etc. |
+| `onvesper-kb/` | Full offline mirror of the official Vesper docs (317 pages, rebuild anytime with `bash onvesper-kb/refresh.sh`) |
+| `/seo-report` skill | On-demand deep SEO analysis: runs the SEO tools, reads trends, and turns findings into exact Back Office fix steps |
+| `scripts/seo_snapshot.py` | Metrics collector behind the skill (discoverability scores, metadata audits, tag maps). Reports are generated locally on demand — never committed. |
+
+```bash
+export AJ360_API_KEY=…
+python scripts/seo_snapshot.py   # → reports/seo/<date>.md (local only)
+```
 
 ## Contributing
 

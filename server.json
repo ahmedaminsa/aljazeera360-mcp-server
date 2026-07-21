@@ -12,7 +12,7 @@
   "remotes": [
     {
       "type": "streamable-http",
-      "url": "https://aljazeera360-mcp-server-production.up.railway.app/mcp"
+      "url": "https://aljazeera360-mcp.ahmed-26d.workers.dev/mcp"
     }
   ]
 }

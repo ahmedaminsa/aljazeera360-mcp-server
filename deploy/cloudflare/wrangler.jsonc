@@ -1,0 +1,43 @@
+// Cloudflare Containers deployment for the Al Jazeera 360 MCP server.
+// Requires: Workers Paid plan + Docker running locally for `wrangler deploy`.
+// See deploy/cloudflare/README.md for the full walkthrough.
+{
+  "name": "aljazeera360-mcp",
+  "main": "src/index.js",
+  "compatibility_date": "2026-06-01",
+  // Serve on the account's workers.dev subdomain
+  "workers_dev": true,
+  "containers": [
+    {
+      "class_name": "AJ360Container",
+      // Reuses the repo's existing Dockerfile (path relative to this file)
+      "image": "../../Dockerfile",
+      // One instance keeps MCP streamable-http sessions on the same backend
+      "max_instances": 1,
+      "instance_type": "basic"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AJ360_CONTAINER",
+        "class_name": "AJ360Container"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AJ360Container"]
+    }
+  ],
+  "vars": {
+    // MUST match the public hostname of this Worker, or the server's
+    // DNS-rebinding protection rejects requests with 421.
+    // If you use a custom domain later, change this and deploy again.
+    "AJ360_ALLOWED_HOST": "aljazeera360-mcp.ahmed-26d.workers.dev",
+    // Full 24-tool profile (SEO + analytics tools), matching the previous
+    // Railway deployment the claude.ai connector was built around.
+    "AJ360_ENABLE_SEO_TOOLS": "1"
+  }
+}

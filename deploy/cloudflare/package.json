@@ -1,0 +1,16 @@
+{
+  "name": "aljazeera360-mcp-cloudflare",
+  "private": true,
+  "description": "Cloudflare Containers deployment wrapper for the Al Jazeera 360 MCP server",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "^0.0.28"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

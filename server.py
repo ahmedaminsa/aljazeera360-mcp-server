@@ -1,4 +1,3 @@
-from mcp.types import ToolAnnotations
 """
 Al Jazeera 360 MCP Server
 =========================
@@ -31,6 +30,7 @@ import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ToolAnnotations
 
 # Analytics & Request Tracking
 from analytics import tracker, track_request, start_dashboard, ENABLE_DASHBOARD, DASHBOARD_PORT, DASHBOARD_HTML
@@ -190,6 +190,12 @@ class TokenManager:
                     return True
                 else:
                     logger.warning(f"Token refresh returned {resp.status_code}: {resp.text[:100]}")
+                    if resp.status_code == 400:
+                        # Invalid/expired refresh token — drop it (including the
+                        # persisted copy) so cold starts fall straight through to
+                        # a fresh guest session instead of failing every time.
+                        self._refresh_token = None
+                        self._clear_persisted_refresh_token()
                     return False
             except Exception as e:
                 logger.error(f"Failed to refresh token: {e}")
@@ -258,7 +264,7 @@ class TokenManager:
     
     def _persist_refresh_token(self, token: str):
         """Persist rotated refresh token to disk so it survives restarts.
-        
+
         Writes to .refresh_token in the working directory. This file is
         gitignored. If writing fails (e.g., read-only filesystem), the
         server continues with the in-memory token.
@@ -270,6 +276,17 @@ class TokenManager:
             logger.debug("Persisted rotated refresh token to disk")
         except OSError:
             pass  # Read-only filesystem (e.g., Docker), skip silently
+
+    @staticmethod
+    def _clear_persisted_refresh_token():
+        """Remove the persisted refresh token (e.g., after the API rejects it)."""
+        try:
+            token_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".refresh_token")
+            if os.path.exists(token_path):
+                os.remove(token_path)
+                logger.info("Removed invalid persisted refresh token")
+        except OSError:
+            pass
 
 
 # ============================================================================
@@ -304,14 +321,18 @@ class AlJazeera360Client:
             headers["Authorization"] = f"Bearer {token}"
         return headers
     
+    # The Dice API rejects rpp values above 25 with 400 Bad Request.
+    MAX_ITEMS_PER_BUCKET = 25
+
     @api_retry
     @ttl_cache(ttl_seconds=120)
     async def get_home_content(self, items_per_bucket: int = 12) -> dict:
         """Get the home page content with all buckets.
-        
+
         Tested: Returns heroes[], buckets[] with contentList[] containing
         VOD and VOD_SERIES items.
         """
+        items_per_bucket = min(items_per_bucket, self.MAX_ITEMS_PER_BUCKET)
         token = await self.token_manager.get_token()
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(
@@ -336,9 +357,10 @@ class AlJazeera360Client:
     @ttl_cache(ttl_seconds=300)
     async def get_section_content(self, section_id: str, items_per_bucket: int = 12) -> dict:
         """Get content for a specific section/channel.
-        
+
         Tested: Works with all section IDs listed in SECTIONS dict.
         """
+        items_per_bucket = min(items_per_bucket, self.MAX_ITEMS_PER_BUCKET)
         token = await self.token_manager.get_token()
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(
@@ -609,25 +631,33 @@ _transport_mode = os.environ.get("MCP_TRANSPORT", "streamable-http")
 if _transport_mode in ("streamable-http", "sse"):
     # Configure DNS Rebinding Protection, Allowed Hosts, and Allowed Origins
     # Re-enabling protection and defining strict allowed hosts/origins for security compliance
+    # NOTE: the MCP SDK matches Host headers EXACTLY, or via explicit "host:*"
+    # port wildcards. A bare "localhost" entry does NOT match "localhost:8080",
+    # so every entry needs its ":*" twin or clients get 421 Misdirected Request.
     _allowed_hosts = [
-        "localhost",
-        "127.0.0.1",
-        "aljazeera360-mcp-server-production.up.railway.app", # Railway production domain
+        "localhost", "localhost:*",
+        "127.0.0.1", "127.0.0.1:*",
+        "aljazeera360-mcp-server-production.up.railway.app",  # Railway production domain
+        "aljazeera360-mcp-server-production.up.railway.app:*",
         "aljazeera360-mcp.up.railway.app",
+        "aljazeera360-mcp.up.railway.app:*",
     ]
     # Add any custom host from environment if deployed elsewhere
     _custom_host = os.environ.get("AJ360_ALLOWED_HOST")
     if _custom_host:
-        _allowed_hosts.append(_custom_host)
-        
+        _allowed_hosts.extend([_custom_host, f"{_custom_host}:*"])
+
     _security = TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=_allowed_hosts,
         allowed_origins=[
-            "http://localhost",
-            "http://127.0.0.1",
+            "http://localhost", "http://localhost:*",
+            "http://127.0.0.1", "http://127.0.0.1:*",
             "https://aljazeera360.com",
             "https://www.aljazeera360.com",
+            # AI clients that connect via remote MCP connectors
+            "https://claude.ai",
+            "https://claude.com",
         ]
     )
     mcp = FastMCP(
@@ -639,6 +669,30 @@ if _transport_mode in ("streamable-http", "sse"):
 else:
     mcp = FastMCP("aljazeera360")
 client = AlJazeera360Client()
+
+
+async def _enrich_with_vod_details(items: list, limit: Optional[int] = None) -> list:
+    """Merge full VOD details into section-list items.
+
+    Section list payloads do NOT include publishedDate or categories — those
+    fields only exist on /api/v4/vod/{id}. Tools that score metadata quality or
+    freshness must enrich items first or they report false "missing" issues.
+    get_vod_details is TTL-cached, so repeated enrichment is cheap within a run.
+    """
+    enriched = []
+    for item in (items if limit is None else items[:limit]):
+        if not isinstance(item, dict):
+            continue
+        vid = item.get("id") or item.get("vodId")
+        if vid and item.get("type") != "VOD_SERIES":
+            try:
+                vod = await client.get_vod_details(vid)
+                if isinstance(vod, dict):
+                    item = {**item, **{k: v for k, v in vod.items() if v is not None}}
+            except Exception:
+                pass  # keep the plain list item
+        enriched.append(item)
+    return enriched
 
 # ----------------------------------------------------------------------------
 # Tool Profiles
@@ -1589,11 +1643,13 @@ async def audit_metadata_quality(section_id: str = "AJA", max_items: int = 50, p
         good_items = []
         total = 0
 
-        # Apply pagination to audited items
+        # Apply pagination, then enrich: list payloads lack publishedDate and
+        # categories, so auditing them directly reports false "missing" issues.
         start_idx = (page - 1) * page_size
         end_idx = start_idx + page_size
-        paginated_items = items[start_idx:end_idx]
-        
+        paginated_items = items[start_idx:end_idx][:max_items]
+        paginated_items = await _enrich_with_vod_details(paginated_items)
+
         for item in paginated_items:
             if not isinstance(item, dict):
                 continue
@@ -1722,6 +1778,10 @@ async def get_trending_topics(top_n: int = 20) -> str:
         recent_titles = []
         total_items = 0
 
+        # Categories and publishedDate only exist in full VOD details; enrich a
+        # sample so category counts and the last-7-days signal are real.
+        all_items = await _enrich_with_vod_details(all_items, limit=25) + all_items[25:]
+
         for item in all_items:
             if not isinstance(item, dict):
                 continue
@@ -1820,9 +1880,10 @@ async def compare_sections() -> str:
                 has_fhd = sum(1 for h in heights if 1080 <= h < 2160)
                 has_hd = sum(1 for h in heights if 720 <= h < 1080)
 
-                # Find most recent item
+                # Find most recent item. publishedDate is absent from list
+                # payloads, so enrich a small sample with full VOD details.
                 dates = []
-                for i in items:
+                for i in await _enrich_with_vod_details(items, limit=5):
                     if isinstance(i, dict) and i.get("publishedDate"):
                         try:
                             d = datetime.datetime.fromisoformat(i["publishedDate"].replace("Z", "+00:00"))
@@ -2251,7 +2312,7 @@ async def generate_faq_schema(video_id: int) -> str:
 
 
 @seo_tool(annotations=ToolAnnotations(title="Get AI Discoverability Score (مؤشر الاكتشاف بالذكاء الاصطناعي)", readOnlyHint=True))
-async def get_ai_discoverability_score(section_id: str = "AJA", max_items: int = 50) -> str:
+async def get_ai_discoverability_score(section_id: str = "AJA", max_items: int = 50, page: int = 1, page_size: int = 50) -> str:
     """Calculate AI Discoverability Score for content (0-100).
     
     Measures how well each video can be discovered and cited by AI systems
@@ -2285,14 +2346,16 @@ async def get_ai_discoverability_score(section_id: str = "AJA", max_items: int =
         
         if not items:
             return json.dumps({'error': f'No content found in section {section_id}'}, ensure_ascii=False)
-        
+
         scored_items = []
-        
-        # Apply pagination to audited items
+
+        # Apply pagination, then enrich: list payloads lack publishedDate and
+        # categories, which several scoring criteria depend on.
         start_idx = (page - 1) * page_size
         end_idx = start_idx + page_size
-        paginated_items = items[start_idx:end_idx]
-        
+        paginated_items = items[start_idx:end_idx][:max_items]
+        paginated_items = await _enrich_with_vod_details(paginated_items)
+
         for item in paginated_items:
             if not isinstance(item, dict):
                 continue
@@ -3475,7 +3538,7 @@ def validate_origin(request: Request) -> bool:
     origin = request.headers.get("origin")
     if not origin:
         return True # Allow non-browser clients (like direct MCP clients)
-        
+
     # Allowed origins: local development and official platforms
     allowed_origins = [
         "http://localhost",
@@ -3488,6 +3551,36 @@ def validate_origin(request: Request) -> bool:
         if origin.startswith(allowed):
             return True
     return False
+
+
+# Optional shared secret for the analytics data endpoints. When set, callers
+# must present it as `Authorization: Bearer <token>` or `?token=<token>`.
+# Strongly recommended for any public (SSE/cloud) deployment, since the
+# analytics endpoints expose request history and search terms.
+DASHBOARD_TOKEN = os.environ.get("AJ360_DASHBOARD_TOKEN", "").strip()
+
+
+def authorize_analytics(request: Request) -> Optional[JSONResponse]:
+    """Guard the analytics data endpoints.
+
+    Returns a JSONResponse to short-circuit with (403) when the request is not
+    authorized, or None when it may proceed. Enforces origin validation and,
+    when AJ360_DASHBOARD_TOKEN is set, a bearer/query token.
+    """
+    if not validate_origin(request):
+        return JSONResponse({"error": "Unauthorized Origin"}, status_code=403)
+
+    if DASHBOARD_TOKEN:
+        provided = ""
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            provided = auth_header[7:].strip()
+        if not provided:
+            provided = request.query_params.get("token", "").strip()
+        if provided != DASHBOARD_TOKEN:
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
+
+    return None
 
 @mcp.custom_route("/", methods=["GET"])
 async def dashboard_root(request: Request):
@@ -3504,17 +3597,23 @@ async def dashboard_page(request: Request):
 @mcp.custom_route("/api/stats", methods=["GET"])
 async def api_stats(request: Request):
     """Return analytics stats as JSON."""
+    denied = authorize_analytics(request)
+    if denied is not None:
+        return denied
     days = int(request.query_params.get("days", "7"))
     stats = tracker.get_stats(days=days)
-    return JSONResponse(stats, headers={"Access-Control-Allow-Origin": "*"})
+    return JSONResponse(stats)
 
 
 @mcp.custom_route("/api/recent", methods=["GET"])
 async def api_recent(request: Request):
     """Return recent requests as JSON."""
+    denied = authorize_analytics(request)
+    if denied is not None:
+        return denied
     limit = int(request.query_params.get("limit", "50"))
     recent = tracker.get_recent_requests(limit=limit)
-    return JSONResponse(recent, headers={"Access-Control-Allow-Origin": "*"})
+    return JSONResponse(recent)
 
 
 @mcp.custom_route("/api/health", methods=["GET"])
@@ -3527,7 +3626,7 @@ async def api_health(request: Request):
     return JSONResponse({
         "status": "ok",
         "server": "aljazeera360-mcp",
-        "version": "2.0.0",
+        "version": "2.0.1",
         "transport": _transport_mode,
         "privacy_policy": "/privacy",
         "documentation": "/docs",
