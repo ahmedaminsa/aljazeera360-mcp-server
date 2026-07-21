@@ -41,6 +41,9 @@ LAUNCH.md
 # Internal marketing drafts — keep local, not public
 marketing/
 
+# SEO reports are generated on demand and stay local — never committed
+reports/
+
 # Cloudflare deploy tooling (deploy/cloudflare)
 node_modules/
 .wrangler/

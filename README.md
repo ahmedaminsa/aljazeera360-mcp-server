@@ -421,6 +421,23 @@ MIT
 
 ---
 
+## SEO Ops & Vesper Knowledge Base (AI-assisted)
+
+This repo doubles as an AI-assisted SEO operations workspace for the platform.
+Open it in [Claude Code](https://claude.com/claude-code) and you get:
+
+| Piece | What it does |
+| :--- | :--- |
+| `.claude/agents/onvesper-expert.md` | Expert agent on the Vesper/Deltatre platform that powers aljazeera360.com — ask it anything about Back Office, DVE, licences, advertising, etc. |
+| `onvesper-kb/` | Full offline mirror of the official Vesper docs (317 pages, rebuild anytime with `bash onvesper-kb/refresh.sh`) |
+| `/seo-report` skill | On-demand deep SEO analysis: runs the SEO tools, reads trends, and turns findings into exact Back Office fix steps |
+| `scripts/seo_snapshot.py` | Metrics collector behind the skill (discoverability scores, metadata audits, tag maps). Reports are generated locally on demand — never committed. |
+
+```bash
+export AJ360_API_KEY=…
+python scripts/seo_snapshot.py   # → reports/seo/<date>.md (local only)
+```
+
 ## Contributing
 
 PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
