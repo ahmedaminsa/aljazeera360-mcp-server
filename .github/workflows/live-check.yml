@@ -1,6 +1,6 @@
 name: Live API Check
 
-# Daily smoke test against the real Al Jazeera 360 API and the Railway deployment.
+# Daily smoke test against the real Al Jazeera 360 API and the Cloudflare deployment.
 # The upstream Vesper/Dice API is reverse-engineered and can change without notice
 # (it already did once — see commit history). A failing run here means the server
 # is likely broken for users; GitHub emails the repo owner on scheduled-run failures.
@@ -33,17 +33,24 @@ jobs:
 
   deployment-health:
     runs-on: ubuntu-latest
+    env:
+      DEPLOY_URL: https://aljazeera360-mcp.ahmed-26d.workers.dev
     steps:
-      - name: Check Railway deployment health
+      - name: Check Cloudflare deployment health
         run: |
-          code=$(curl -s -o /dev/null -w "%{http_code}" https://aljazeera360-mcp-server-production.up.railway.app/api/health)
-          echo "Health endpoint returned HTTP $code"
+          # First request may cold-start the container — retry a few times.
+          for i in 1 2 3 4; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 40 "$DEPLOY_URL/api/health")
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 15
+          done
           test "$code" = "200"
 
       - name: Check MCP endpoint responds
         run: |
-          code=$(curl -s -o /dev/null -w "%{http_code}" \
-            -X POST https://aljazeera360-mcp-server-production.up.railway.app/mcp \
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 40 \
+            -X POST "$DEPLOY_URL/mcp" \
             -H "Accept: application/json, text/event-stream" \
             -H "Content-Type: application/json" \
             -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"live-check","version":"1.0"}}}')

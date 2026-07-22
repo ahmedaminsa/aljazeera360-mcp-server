@@ -4,14 +4,14 @@ This folder is the prepared slot for external SEO data sources. Nothing here is
 implemented yet — by design. The snapshot script (`scripts/seo_snapshot.py`) is
 built around a small **collectors list**; each integration becomes one more
 collector that merges extra keys into the same `metrics.jsonl` row and adds a
-section to the weekly report. No restructuring needed.
+section to the on-demand report. No restructuring needed.
 
 ## Pattern (matches the MCP server's `AJ360_ENABLE_SEO_TOOLS` convention)
 
 Each integration is **env-gated**: if its credentials env var is absent, the
 collector is skipped silently. Add the collector module here, register it in
-`COLLECTORS` in `scripts/seo_snapshot.py`, and add the secret to the GitHub
-Action.
+`COLLECTORS` in `scripts/seo_snapshot.py`, and export the credential env var
+wherever you run the snapshot (reports are on-demand — never committed).
 
 ## Google Search Console (first candidate)
 
@@ -36,7 +36,7 @@ What it adds: keyword rankings vs competitors, backlinks, site audit issues.
 
 - Secret: `SEMRUSH_API_KEY`
 - Collector: `integrations/semrush.py` → `row["semrush"] = {...}`
-- Note: SEMrush API units are metered — keep the weekly pull narrow
+- Note: SEMrush API units are metered — keep each pull narrow
   (tracked keywords + domain overview only).
 
 ## Row schema contract

@@ -1400,8 +1400,8 @@ async def generate_seo_content(video_id: int) -> str:
             "thumbnailUrl": thumbnail_url,
             "uploadDate": published_date[:10] if published_date else "",
             "duration": iso_duration,
-            "contentUrl": f"{PLATFORM_URL}/video/{video_id}",
-            "embedUrl": f"{PLATFORM_URL}/video/{video_id}",
+            "contentUrl": f"{PLATFORM_URL}/interstitial/{video_id}",
+            "embedUrl": f"{PLATFORM_URL}/interstitial/{video_id}",
             "keywords": ", ".join(keywords),
             "inLanguage": "ar",
             "publisher": {
@@ -1528,7 +1528,7 @@ async def generate_sitemap(sections: str = "all", max_per_section: int = 100, pa
                     if not video_id or not title:
                         continue
 
-                    page_url = f"{PLATFORM_URL}/video/{video_id}"
+                    page_url = f"{PLATFORM_URL}/interstitial/{video_id}"  # site canonical pattern
 
                     url_el = SubElement(urlset, "url")
                     loc = SubElement(url_el, "loc")
