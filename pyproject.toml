@@ -49,5 +49,7 @@ include = ["server.py", "analytics.py"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["."]
+# Only the offline unit tests run under plain `pytest`; the test_*.py scripts
+# in the repo root are live-API integration scripts, run explicitly.
+testpaths = ["tests"]
 python_files = ["test_*.py"]

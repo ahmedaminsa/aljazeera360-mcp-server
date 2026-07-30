@@ -73,6 +73,39 @@ SECTIONS = {
 }
 
 # ============================================================================
+# Utilities: input bounds & validation
+# ============================================================================
+
+def _bound(value: int, lo: int, hi: int, default: int) -> int:
+    """Clamp a numeric tool parameter to a safe range.
+
+    Every scan-style parameter (max_items, page_size, top_n…) fans out into
+    real upstream API calls, so unbounded values are a cost/abuse vector on a
+    public endpoint. Out-of-range or non-numeric input falls back safely.
+    """
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(value, hi))
+
+
+def _validate_section(section_id: str):
+    """Return an error payload (JSON string) for unknown section ids, else None.
+
+    Failing early with the list of valid ids saves a doomed upstream call and
+    gives the AI client something actionable instead of a raw HTTP error.
+    """
+    if section_id in SECTIONS:
+        return None
+    return json.dumps({
+        "error": f"Unknown section_id: '{section_id}'",
+        "hint": "Use one of the valid section ids listed below (also available via the list_sections tool).",
+        "valid_section_ids": list(SECTIONS.keys()),
+    }, ensure_ascii=False)
+
+
+# ============================================================================
 # Utilities: TTL Cache & Retry
 # ============================================================================
 
@@ -805,6 +838,11 @@ async def browse_section(section_id: str) -> str:
     Args:
         section_id: The section identifier (e.g., "AJA", "Documentaries", "Podcast")
     """
+    # Bound scan parameters — unbounded values fan out into real API calls.
+    section_id = section_id.strip()
+    _sec_err = _validate_section(section_id)
+    if _sec_err:
+        return _sec_err
     try:
         data = await client.get_section_content(section_id)
         
@@ -955,6 +993,8 @@ async def get_season_episodes(season_id: int, max_episodes: int = 20) -> str:
         season_id: The season ID (obtained from get_series_details)
         max_episodes: Maximum number of episodes to return (default: 20)
     """
+    # Bound scan parameters — unbounded values fan out into real API calls.
+    max_episodes = _bound(max_episodes, 1, 50, 20)
     try:
         data = await client.get_season_episodes(season_id, page_size=max_episodes)
         
@@ -1014,6 +1054,8 @@ async def search_videos(query: str, content_type: Optional[str] = None, max_resu
         content_type: Optional filter — "VOD" for single videos, "SERIES" for series only, None for all
         max_results: Maximum number of results to return (default: 20)
     """
+    # Bound scan parameters — unbounded values fan out into real API calls.
+    max_results = _bound(max_results, 1, 50, 20)
     try:
         data = await client.search_content(query, page_size=max_results)
         # Pass query for client-side relevance re-ranking
@@ -1141,6 +1183,11 @@ async def get_latest_episodes(section_id: str = "AJA", count: int = 10) -> str:
         section_id: Section to get latest from (default: "AJA" for Al Jazeera Arabic)
         count: Number of episodes to return (default: 10)
     """
+    # Bound scan parameters — unbounded values fan out into real API calls.
+    count = _bound(count, 1, 25, 10)
+    _sec_err = _validate_section(section_id)
+    if _sec_err:
+        return _sec_err
     try:
         data = await client.get_section_content(section_id, items_per_bucket=count)
         
@@ -1352,7 +1399,7 @@ async def generate_seo_content(video_id: int) -> str:
             parts.append(f"التصنيف: {' – '.join(cat_names)}.")
         
         parts.append(f"المدة: {duration_label}. الجودة: {quality}.")
-        parts.append(f"شاهد هذا المحتوى وغيره الكثير على منصة الجزيرة 360 – مشاهدة بلا قيود.")
+        parts.append("شاهد هذا المحتوى وغيره الكثير على منصة الجزيرة 360 – مشاهدة بلا قيود.")
         extended_description = " ".join(parts)
         
         # ----------------------------------------------------------------
@@ -1477,6 +1524,10 @@ async def generate_sitemap(sections: str = "all", max_per_section: int = 100, pa
         page: Page number for pagination (default: 1)
         page_size: Number of items per page (default: 100)
     """
+    # Bound scan parameters — unbounded values fan out into real API calls.
+    max_per_section = _bound(max_per_section, 1, 200, 100)
+    page = _bound(page, 1, 1000, 1)
+    page_size = _bound(page_size, 1, 200, 100)
     try:
         from xml.etree.ElementTree import Element, SubElement, tostring
         from xml.dom import minidom
@@ -1622,6 +1673,13 @@ async def audit_metadata_quality(section_id: str = "AJA", max_items: int = 50, p
         page: Page number for pagination (default: 1)
         page_size: Number of audited items to return in this page (default: 20)
     """
+    # Bound scan parameters — unbounded values fan out into real API calls.
+    max_items = _bound(max_items, 1, 50, 50)
+    page = _bound(page, 1, 1000, 1)
+    page_size = _bound(page_size, 1, 50, 20)
+    _sec_err = _validate_section(section_id)
+    if _sec_err:
+        return _sec_err
     try:
         data = await client.get_section_content(section_id, items_per_bucket=max_items)
 
@@ -1701,7 +1759,6 @@ async def audit_metadata_quality(section_id: str = "AJA", max_items: int = 50, p
         # Calculate scores
         def pct(n): return round(n / total * 100, 1) if total > 0 else 0
 
-        total_issues = sum(len(v) for v in issues.values())
         health_score = round((good_items.__len__() / total * 100), 1) if total > 0 else 0
 
         result = {
@@ -1751,6 +1808,8 @@ async def get_trending_topics(top_n: int = 20) -> str:
     Args:
         top_n: Number of top topics to return (default: 20)
     """
+    # Bound scan parameters — unbounded values fan out into real API calls.
+    top_n = _bound(top_n, 1, 50, 20)
     try:
         import re
         from collections import Counter
@@ -2334,6 +2393,13 @@ async def get_ai_discoverability_score(section_id: str = "AJA", max_items: int =
     Returns:
         JSON with scores, distribution, top/bottom performers, and recommendations
     """
+    # Bound scan parameters — unbounded values fan out into real API calls.
+    max_items = _bound(max_items, 1, 50, 50)
+    page = _bound(page, 1, 1000, 1)
+    page_size = _bound(page_size, 1, 50, 50)
+    _sec_err = _validate_section(section_id)
+    if _sec_err:
+        return _sec_err
     from collections import Counter
     try:
         data = await client.get_section_content(section_id, items_per_bucket=10)
@@ -2510,7 +2576,7 @@ async def get_ai_discoverability_score(section_id: str = "AJA", max_items: int =
             },
             'top_performers': scored_items[:5],
             'needs_improvement': [i for i in scored_items if i['grade'] in ['D', 'F']][:10],
-            'all_scores': scored_items,
+            # all_scores removed: duplicated top_performers/needs_improvement and bloated responses
             'section_insights': [
                 f"متوسط نقاط قابلية الاكتشاف: {avg_score}/100",
                 f"نسبة المحتوى ممتاز (A/B): {round((grade_dist.get('A',0)+grade_dist.get('B',0))/len(scored_items)*100, 1)}%",
@@ -2544,8 +2610,7 @@ async def build_topic_clusters(sections: str = "AJA,AJD") -> str:
     Returns:
         JSON with topic clusters, pillar pages, supporting content, and linking strategy
     """
-    import re
-    from collections import defaultdict, Counter
+    from collections import defaultdict
     
     # Core topic seeds for clustering
     TOPIC_SEEDS = {
@@ -2690,7 +2755,6 @@ async def find_evergreen_content(sections: str = "AJA,AJD") -> str:
     Returns:
         JSON with evergreen/news classification, SEO priority scores, and recommendations
     """
-    import re
     
     # News/time-sensitive indicators
     NEWS_KEYWORDS = [
@@ -2850,6 +2914,8 @@ async def get_host_profile(host_name: str, max_items: int = 20) -> str:
         host_name: Name of the host/presenter (Arabic or English)
         max_items: Maximum number of items to scan per section (default: 20)
     """
+    # Bound scan parameters — unbounded values fan out into real API calls.
+    max_items = _bound(max_items, 1, 40, 20)
     try:
         host_name_lower = host_name.strip()
         host_videos = []
@@ -2948,6 +3014,8 @@ async def get_genre_report(genre: str = "", max_items: int = 15) -> str:
         genre: Genre name in Arabic (e.g. صحة, رياضة, سياسة, وثائقي) — leave empty for all genres
         max_items: Items per section to scan (default: 15)
     """
+    # Bound scan parameters — unbounded values fan out into real API calls.
+    max_items = _bound(max_items, 1, 40, 15)
     try:
         genre_map = {}  # genre -> list of videos
         subgenre_map = {}  # subgenre -> list of videos
@@ -3043,6 +3111,11 @@ async def get_searchable_tags_map(max_items: int = 20, top_n: int = 50, page: in
         page: Page number for returned tags (default: 1)
         page_size: Number of tags per page (default: 20)
     """
+    # Bound scan parameters — unbounded values fan out into real API calls.
+    max_items = _bound(max_items, 1, 40, 20)
+    top_n = _bound(top_n, 1, 100, 50)
+    page = _bound(page, 1, 1000, 1)
+    page_size = _bound(page_size, 1, 50, 20)
     try:
         from collections import Counter
         all_tags = Counter()
@@ -3121,6 +3194,10 @@ async def get_country_content_map(country: str = "", max_items: int = 20, page: 
         page: Page number for returned countries (default: 1)
         page_size: Number of countries per page (default: 10)
     """
+    # Bound scan parameters — unbounded values fan out into real API calls.
+    max_items = _bound(max_items, 1, 40, 20)
+    page = _bound(page, 1, 1000, 1)
+    page_size = _bound(page_size, 1, 50, 10)
     try:
         country_map = {}  # country -> list of videos
 
