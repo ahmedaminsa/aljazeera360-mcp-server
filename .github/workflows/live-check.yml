@@ -27,7 +27,7 @@ jobs:
 
       - name: Run live API smoke test
         env:
-          AJ360_API_KEY: ${{ secrets.AJ360_API_KEY }}
+          AJ360_API_KEY: ${{ secrets.AJ360_API_KEY || vars.AJ360_API_KEY }}
           AJ360_REFRESH_TOKEN: ${{ secrets.AJ360_REFRESH_TOKEN }}
         run: python test_server.py
 
