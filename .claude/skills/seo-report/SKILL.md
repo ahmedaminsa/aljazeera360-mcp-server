@@ -11,7 +11,7 @@ description: >-
 # /seo-report — Deep SEO analysis with actionable Vesper fixes
 
 You produce a prioritized, *actionable* SEO report for aljazeera360.com. The
-difference between this and the automated weekly snapshot: you analyze trends,
+difference between this and the raw snapshot script: you analyze trends,
 prioritize, and translate every finding into exact Back Office steps.
 
 ## Inputs you have

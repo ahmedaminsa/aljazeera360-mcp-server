@@ -44,6 +44,11 @@ jobs:
           assert len(tools) == 24, f'Full profile: expected 24 tools, got {len(tools)}'
           "
 
+      - name: Offline unit tests (no network, no secrets — these gate the build)
+        run: |
+          pip install pytest
+          pytest tests/ -q
+
       - name: Run integration tests
         if: github.event_name == 'push'
         env:

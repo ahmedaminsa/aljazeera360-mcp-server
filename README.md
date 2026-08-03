@@ -16,18 +16,20 @@ An MCP (Model Context Protocol) server that gives AI tools like Claude, ChatGPT,
 
 ## ⚡ Quick Connect — No Install Needed
 
-A hosted instance is live. Add this to your MCP client config and you're done:
+A hosted instance is live on Cloudflare. Add this to your MCP client config and you're done:
 
 ```json
 {
   "mcpServers": {
     "aljazeera360": {
       "type": "http",
-      "url": "https://aljazeera360-mcp-server-production.up.railway.app/mcp"
+      "url": "https://aljazeera360-mcp.ahmed-26d.workers.dev/mcp"
     }
   }
 }
 ```
+
+> First request after idle takes a few seconds (container cold start) — subsequent requests are fast.
 
 Then ask your assistant: *"What's trending on Al Jazeera 360?"* — or in Arabic: *"ايه أحدث حلقات الدحيح؟"*
 
@@ -195,7 +197,7 @@ Restart Claude Desktop. The Al Jazeera 360 tools will appear automatically.
 
 ## Use with Any MCP Client
 
-This server uses the standard MCP protocol over `stdio`. It works with any MCP-compatible client:
+This server speaks the standard MCP protocol over `stdio` (local) and Streamable HTTP (hosted). It works with any MCP-compatible client:
 
 - [Claude Desktop](https://claude.ai/download)
 - [Cursor](https://cursor.sh)
@@ -214,20 +216,25 @@ This server uses the standard MCP protocol over `stdio`. It works with any MCP-c
 | `AJ360_AUTH_TOKEN` | No | Guest mode | Short-lived auth token (~10 min). Good for quick testing. |
 | `AJ360_API_KEY` | Yes | — | Platform API key (public, from browser network requests). No default is bundled — you must provide it. |
 | `MCP_TRANSPORT` | No | `streamable-http` | Transport mode: `stdio` (local), `streamable-http` (cloud, recommended), or `sse` (legacy cloud). |
-| `MCP_PORT` | No | `8080` | Port for SSE transport (cloud deployment). |
+| `MCP_PORT` | No | `8080` | Port for the HTTP transport (cloud deployment). |
+| `AJ360_ALLOWED_HOST` | Cloud only | — | Public hostname of your deployment (no scheme). Required when self-hosting on a custom domain — the DNS-rebinding protection rejects unknown hosts with 421. |
 | `AJ360_ENABLE_SEO_TOOLS` | No | off | Set to `1` to register the 16 SEO/analytics tools (full profile). |
 | `AJ360_ENABLE_DASHBOARD` | No | `true` | Enable/disable the analytics dashboard. |
 | `AJ360_DASHBOARD_PORT` | No | `9090` | Port for the analytics dashboard. |
 | `AJ360_DASHBOARD_TOKEN` | No | — | Shared secret for the analytics data endpoints (`/api/stats`, `/api/recent`). When set, callers must send `Authorization: Bearer <token>` or `?token=<token>`. **Strongly recommended for any public/cloud deployment.** |
 | `AJ360_ANALYTICS_DB` | No | `analytics.db` | Path to SQLite analytics database. |
 
-The server works **without any configuration** in guest mode. For full content access, provide a refresh token.
+The server needs only `AJ360_API_KEY` to run — authentication falls back to an automatic guest session. For full content access, also provide a refresh token.
 
 ---
 
 ## Deploy
 
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/aljazeera360-mcp)
+The production instance runs on **Cloudflare Containers** — full walkthrough in
+[`deploy/cloudflare/README.md`](deploy/cloudflare/README.md) (wraps the Dockerfile in a
+Cloudflare Container behind a tiny Worker; requires the Workers Paid plan and local
+Docker for deploys). Any container platform works — alternatives below.
+
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/ahmedaminsa/aljazeera360-mcp-server)
 
 ### Docker
@@ -250,11 +257,7 @@ gcloud run deploy aljazeera360-mcp \
 
 ### Render / Railway / Fly.io
 
-Connect this repo — auto-deploys from the included Dockerfile. Set environment variables in the dashboard.
-
-### Cloudflare (Containers)
-
-Full walkthrough in [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md) — wraps the same Dockerfile in a Cloudflare Container behind a tiny Worker. Requires the Workers Paid plan and local Docker for deploys.
+Connect this repo — auto-deploys from the included Dockerfile. Set environment variables in the dashboard (including `AJ360_ALLOWED_HOST=<your-domain>` so the DNS-rebinding protection accepts your host).
 
 ---
 

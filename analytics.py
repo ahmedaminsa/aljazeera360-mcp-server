@@ -19,7 +19,6 @@ import sqlite3
 import time
 import threading
 from datetime import datetime, timedelta
-from typing import Optional
 from functools import wraps
 from http.server import HTTPServer, BaseHTTPRequestHandler
 

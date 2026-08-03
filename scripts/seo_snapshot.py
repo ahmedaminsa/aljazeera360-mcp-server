@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """SEO snapshot collector for aljazeera360.com.
 
-Runs the SEO analysis tools from the aljazeera360-mcp package against the live
+Runs the SEO analysis tools from this repo's `server` module against the live
 platform, appends one metrics row to reports/seo/history/metrics.jsonl, and
 renders a markdown report (reports/seo/YYYY-MM-DD.md) with deltas vs the
-previous snapshot.
+previous snapshot. Reports are on-demand and local-only (reports/ is
+gitignored — never committed).
 
 Designed as a small list of *collectors* so new metric sources (e.g. Google
 Search Console, SEMrush — see integrations/README.md) can be added without
