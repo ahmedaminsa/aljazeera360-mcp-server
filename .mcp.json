@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "aljazeera360": {
+      "type": "http",
+      "url": "https://aljazeera360-mcp.ahmed-26d.workers.dev/mcp"
+    }
+  }
+}

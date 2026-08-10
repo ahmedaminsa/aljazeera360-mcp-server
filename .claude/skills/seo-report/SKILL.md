@@ -59,6 +59,15 @@ prioritize, and translate every finding into exact Back Office steps.
      under-serves
 6. Reply to the user with the executive summary and the report path.
 
+## Works with the claude-seo plugin (optional)
+
+If the `claude-seo` plugin is installed (its `/seo …` commands are available),
+combine forces: use its technical/page-level audit commands (e.g. `/seo audit`,
+`/seo schema`) for generic web checks, feed them the platform data from this
+repo's MCP tools (catalog metadata, tag maps, discoverability scores), and keep
+this skill as the layer that turns all findings into Vesper Back Office fix
+steps via the onvesper-expert agent.
+
 ## Rules
 
 - Match the user's language (Egyptian Arabic → Arabic report body is fine;
