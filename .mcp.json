@@ -11,6 +11,10 @@
         "DATAFORSEO_LOGIN": "${DATAFORSEO_LOGIN}",
         "DATAFORSEO_PASSWORD": "${DATAFORSEO_PASSWORD}"
       }
+    },
+    "screamingfrog": {
+      "type": "http",
+      "url": "http://127.0.0.1:11435/mcp"
     }
   }
 }
