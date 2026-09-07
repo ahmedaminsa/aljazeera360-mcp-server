@@ -670,10 +670,8 @@ if _transport_mode in ("streamable-http", "sse"):
     _allowed_hosts = [
         "localhost", "localhost:*",
         "127.0.0.1", "127.0.0.1:*",
-        "aljazeera360-mcp-server-production.up.railway.app",  # Railway production domain
-        "aljazeera360-mcp-server-production.up.railway.app:*",
-        "aljazeera360-mcp.up.railway.app",
-        "aljazeera360-mcp.up.railway.app:*",
+        "aljazeera360-mcp.ahmed-26d.workers.dev",  # Cloudflare production domain
+        "aljazeera360-mcp.ahmed-26d.workers.dev:*",
     ]
     # Add any custom host from environment if deployed elsewhere
     _custom_host = os.environ.get("AJ360_ALLOWED_HOST")
@@ -3561,7 +3559,7 @@ DOCS_HTML = """<!DOCTYPE html>
     <p>To connect your AI assistant to this server, use the following configuration based on your transport mode:</p>
     
     <h3>1. Streamable HTTP Transport (Recommended)</h3>
-    <p>Expose the server as a web service. This is ideal for cloud deployments (Railway, Render, etc.):</p>
+    <p>Expose the server as a web service. This is ideal for cloud deployments (Cloudflare Containers, Render, etc.):</p>
     <pre>URL: https://your-deployed-mcp-server.com/mcp</pre>
     
     <h3>2. STDIO Transport (Local)</h3>
