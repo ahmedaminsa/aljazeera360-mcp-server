@@ -31,6 +31,15 @@
       "new_sqlite_classes": ["AJ360Container"]
     }
   ],
+  // Persistent usage analytics — survives container sleeps, unlike the
+  // in-container SQLite dashboard. Schema in schema.sql.
+  "d1_databases": [
+    {
+      "binding": "ANALYTICS_DB",
+      "database_name": "aj360-analytics",
+      "database_id": "d244d8b7-6934-49c5-834f-95b2ca8b0366"
+    }
+  ],
   "vars": {
     // MUST match the public hostname of this Worker, or the server's
     // DNS-rebinding protection rejects requests with 421.
