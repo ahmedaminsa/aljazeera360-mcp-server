@@ -1,5 +1,5 @@
 """
-Test the remote MCP server deployed on Railway.
+Test the remote MCP server deployed on Cloudflare Containers.
 Connects via SSE and calls tools to generate analytics data.
 """
 import asyncio
@@ -7,7 +7,7 @@ import json
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
-SERVER_URL = "https://aljazeera360-mcp-server-production.up.railway.app/mcp"
+SERVER_URL = "https://aljazeera360-mcp.ahmed-26d.workers.dev/mcp"
 
 
 async def main():
@@ -73,7 +73,7 @@ async def main():
             
             print("=" * 60)
             print("✅ All tests passed! Check the dashboard for updated analytics.")
-            print(f"   Dashboard: https://aljazeera360-mcp-server-production.up.railway.app/")
+            print(f"   Dashboard: https://aljazeera360-mcp.ahmed-26d.workers.dev/")
 
 
 if __name__ == "__main__":

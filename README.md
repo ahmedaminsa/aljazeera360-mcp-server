@@ -336,9 +336,17 @@ Calling `search_videos("غزة")` returns:
 
 ---
 
-## Analytics Dashboard
+## Analytics
 
-The server includes a **built-in analytics dashboard** that tracks every request made by AI tools.
+There are **two layers**, and the difference matters:
+
+| Layer | Endpoint | Persistence |
+| :--- | :--- | :--- |
+| **In-container dashboard** (this server) | `/api/stats`, `/api/recent`, `/` | ⚠️ **Current process only.** On serverless hosts that sleep idle containers (Cloudflare Containers, Cloud Run scale-to-zero), the SQLite file lives on ephemeral disk and resets — expect zeros after any restart. |
+| **Edge analytics** (Cloudflare deploy) | `/api/usage` | ✅ **Persistent.** The Worker logs every MCP request to a Cloudflare D1 database. See [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md). |
+
+If you self-host on a always-on VM, the in-container dashboard is enough. On
+serverless, use the edge layer for anything you want to keep.
 
 ### What It Tracks
 
@@ -370,6 +378,7 @@ For cloud deployments, expose port 9090 alongside the MCP port (8080).
 | `GET /api/health` | Health check with version, transport, and links to `/privacy` and `/docs` |
 | `GET /privacy` | Privacy Policy page |
 | `GET /docs` | Server documentation page |
+| `GET /api/usage` | **Cloudflare deploys only** — persistent usage report from D1: clients, tools, top content queries, countries, daily trend, recent sessions |
 
 ### Configuration
 

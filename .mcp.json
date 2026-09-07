@@ -3,6 +3,18 @@
     "aljazeera360": {
       "type": "http",
       "url": "https://aljazeera360-mcp.ahmed-26d.workers.dev/mcp"
+    },
+    "dataforseo": {
+      "command": "npx",
+      "args": ["-y", "dataforseo-mcp-server"],
+      "env": {
+        "DATAFORSEO_LOGIN": "${DATAFORSEO_LOGIN}",
+        "DATAFORSEO_PASSWORD": "${DATAFORSEO_PASSWORD}"
+      }
+    },
+    "screamingfrog": {
+      "type": "http",
+      "url": "http://127.0.0.1:11435/mcp"
     }
   }
 }

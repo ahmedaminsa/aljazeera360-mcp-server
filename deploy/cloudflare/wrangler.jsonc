@@ -31,13 +31,22 @@
       "new_sqlite_classes": ["AJ360Container"]
     }
   ],
+  // Persistent usage analytics — survives container sleeps, unlike the
+  // in-container SQLite dashboard. Schema in schema.sql.
+  "d1_databases": [
+    {
+      "binding": "ANALYTICS_DB",
+      "database_name": "aj360-analytics",
+      "database_id": "d244d8b7-6934-49c5-834f-95b2ca8b0366"
+    }
+  ],
   "vars": {
     // MUST match the public hostname of this Worker, or the server's
     // DNS-rebinding protection rejects requests with 421.
     // If you use a custom domain later, change this and deploy again.
     "AJ360_ALLOWED_HOST": "aljazeera360-mcp.ahmed-26d.workers.dev",
-    // Full 24-tool profile (SEO + analytics tools), matching the previous
-    // Railway deployment the claude.ai connector was built around.
+    // Full 24-tool profile (SEO + analytics tools) — the
+    // deployment profile the claude.ai connector was built around.
     "AJ360_ENABLE_SEO_TOOLS": "1"
   }
 }

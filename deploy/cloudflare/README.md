@@ -63,3 +63,29 @@ and update the `remotes[0].url` in the repo's `server.json` to match.
   then set `AJ360_ALLOWED_HOST` to that domain and redeploy.
 - The `@cloudflare/containers` API is still evolving; if a deploy fails after
   an SDK update, check https://developers.cloudflare.com/containers/
+
+## Usage analytics (persistent)
+
+The container's own `/api/stats` only covers the current container lifetime —
+it resets whenever the instance sleeps. The Worker therefore logs every MCP
+request to a **Cloudflare D1** database (`aj360-analytics`, schema in
+`schema.sql`), which persists.
+
+```bash
+curl "https://<your-worker>/api/usage?days=30" \
+  -H "Authorization: Bearer $AJ360_DASHBOARD_TOKEN"
+```
+
+Returns: totals, clients (AI client name + version), tools called, top content
+queries, countries, daily breakdown, and recent sessions.
+
+**Privacy:** no IP addresses and no personal identifiers are stored — only the
+self-reported AI client type, the tool invoked, the content query, and the
+coarse country code Cloudflare already attaches to every request. The endpoint
+requires `AJ360_DASHBOARD_TOKEN` and fails closed when that secret is unset.
+
+Re-apply the schema after recreating the database:
+
+```bash
+npx wrangler d1 execute aj360-analytics --remote --file=schema.sql
+```
