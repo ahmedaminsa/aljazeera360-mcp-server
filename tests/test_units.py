@@ -57,9 +57,9 @@ def test_seo_tool_returns_function_unchanged_when_disabled():
     assert callable(server.audit_metadata_quality)
 
 
-def test_default_profile_registers_8_tools():
+def test_default_profile_registers_9_tools():
     tools = server.mcp._tool_manager._tools
-    assert len(tools) == 8 or os.environ.get("AJ360_ENABLE_SEO_TOOLS")
+    assert len(tools) == 9 or os.environ.get("AJ360_ENABLE_SEO_TOOLS")
 
 
 def test_dashboard_auth_denies_wrong_token():
@@ -78,3 +78,91 @@ def test_dashboard_auth_denies_wrong_token():
         assert resp is not None and resp.status_code == 403
     finally:
         server.DASHBOARD_TOKEN = old
+
+
+# ---------------------------------------------------------------------------
+# MCP Apps (interactive view)
+# ---------------------------------------------------------------------------
+
+import asyncio  # noqa: E402
+
+import mcp_apps  # noqa: E402
+
+UI_TOOLS = {
+    "search_videos", "browse_section", "get_trending_content", "get_latest_episodes",
+    "get_series_details", "get_season_episodes", "get_video_details", "play_video",
+}
+
+
+def test_ui_tools_declare_the_view():
+    tools = server.mcp._tool_manager._tools
+    for name in UI_TOOLS:
+        meta = tools[name].meta or {}
+        assert meta.get("ui", {}).get("resourceUri") == mcp_apps.APP_URI, name
+        assert meta.get("ui/resourceUri") == mcp_apps.APP_URI, name
+
+
+def test_view_resource_is_registered_with_mcp_app_mime_and_csp():
+    resources = asyncio.run(server.mcp.list_resources())
+    view = [r for r in resources if str(r.uri) == mcp_apps.APP_URI]
+    assert view, "ui:// resource missing"
+    assert view[0].mimeType == "text/html;profile=mcp-app"
+    csp = view[0].meta["ui"]["csp"]
+    assert csp["frameDomains"] == ["https://www.aljazeera360.com"]
+    assert "https://dve-images.imggaming.com" in csp["resourceDomains"]
+    assert csp["connectDomains"] == []  # all data flows through tools/call
+
+
+def test_view_html_speaks_the_mcp_apps_protocol():
+    html = mcp_apps.APP_HTML
+    for method in ("ui/initialize", "ui/notifications/initialized", "ui/notifications/tool-result",
+                   "tools/call", "ui/open-link", "ui/notifications/size-changed"):
+        assert method in html, method
+    assert 'dir="rtl"' in html
+
+
+def test_play_video_embeds_the_official_page():
+    async def fake_details(vod_id):
+        return {"id": vod_id, "title": "t", "accessLevel": "GRANTED_ON_SIGN_IN", "duration": 90,
+                "episodeInformation": {"episodeNumber": 3, "seriesInformation": {"id": 2355, "title": "s"}}}
+
+    old = server.client.get_vod_details
+    try:
+        server.client.get_vod_details = fake_details
+        out = json.loads(asyncio.run(server.play_video(42)))
+    finally:
+        server.client.get_vod_details = old
+    assert out["embed_url"] == "https://www.aljazeera360.com/video/42"
+    assert out["requires_sign_in"] is True
+    assert out["series_id"] == 2355 and out["series_title"] == "s"
+
+
+def _search_payload(card_type, raw_id):
+    return {"elements": [{"$type": "cardList", "attributes": {"cards": [{"attributes": {
+        "content": [], "header": [],
+        "action": {"data": {"id": raw_id, "type": card_type, "title": "x", "accessLevel": "GRANTED"}},
+    }}]}}]}
+
+
+def test_search_formats_live_channels_with_live_urls():
+    out = server.format_search_results(_search_payload("LIVE_EVENT", "EVENT#284668"))
+    assert out[0]["id"] == "284668"
+    assert out[0]["watch_url"] == "https://www.aljazeera360.com/live/284668"
+
+
+def test_search_retries_when_platform_returns_empty_layout():
+    calls = []
+
+    async def flaky(query, page_size=20):
+        calls.append(query)
+        return {"elements": []} if len(calls) == 1 else _search_payload("VOD", "VOD#7")
+
+    old = server.client.search_content
+    try:
+        server.client.search_content = flaky
+        # A one-letter query skips the section-browse fallback, so no network.
+        out = json.loads(asyncio.run(server.search_videos("x", max_results=5)))
+    finally:
+        server.client.search_content = old
+    assert len(calls) >= 2
+    assert any(r["id"] == "7" for r in out["results"])

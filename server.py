@@ -33,6 +33,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
 # Analytics & Request Tracking
+from mcp_apps import register_ui, tool_meta
 from analytics import tracker, track_request, start_dashboard, ENABLE_DASHBOARD, DASHBOARD_PORT, DASHBOARD_HTML
 
 # Configure logging
@@ -624,12 +625,17 @@ def format_search_results(data: dict, query: str = "", max_results: int = 20) ->
                 action = attrs.get("action", {})
                 action_data = action.get("data", {})
                 raw_id = action_data.get("id", "")
-                vod_id = raw_id.replace("VOD#", "").replace("SERIES#", "")
+                vod_id = raw_id.replace("VOD#", "").replace("SERIES#", "").replace("EVENT#", "")
                 content_type = action_data.get("type", "VOD")
                 
                 final_title = title or action_data.get("title", "")
                 if final_title:
-                    url = f"{PLATFORM_URL}/video/{vod_id}" if content_type == "VOD" else f"{PLATFORM_URL}/series/{vod_id}"
+                    if content_type == "VOD":
+                        url = f"{PLATFORM_URL}/video/{vod_id}"
+                    elif content_type == "LIVE_EVENT":
+                        url = f"{PLATFORM_URL}/live/{vod_id}"
+                    else:
+                        url = f"{PLATFORM_URL}/series/{vod_id}"
                     results.append({
                         "title": final_title,
                         "series": series_title,
@@ -728,7 +734,7 @@ async def _enrich_with_vod_details(items: list, limit: Optional[int] = None) -> 
 # ----------------------------------------------------------------------------
 # Tool Profiles
 # ----------------------------------------------------------------------------
-# The 8 core discovery tools are always registered. The 16 SEO/analytics tools
+# The 9 core discovery tools are always registered. The 16 SEO/analytics tools
 # target content teams rather than end users, and a small default toolset keeps
 # AI tool selection accurate — so they are opt-in via AJ360_ENABLE_SEO_TOOLS.
 SEO_TOOLS_ENABLED = os.environ.get("AJ360_ENABLE_SEO_TOOLS", "").strip().lower() in ("1", "true", "yes")
@@ -749,7 +755,7 @@ def seo_tool(*args, **kwargs):
     return _unregistered
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Trending Content (المحتوى الرائج)", readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(title="Get Trending Content (المحتوى الرائج)", readOnlyHint=True), meta=tool_meta())
 @track_request("get_trending_content")
 async def get_trending_content() -> str:
     """
@@ -808,7 +814,7 @@ async def get_trending_content() -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Browse Section (تصفح الأقسام)", readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(title="Browse Section (تصفح الأقسام)", readOnlyHint=True), meta=tool_meta())
 @track_request("browse_section")
 async def browse_section(section_id: str) -> str:
     """
@@ -882,7 +888,7 @@ async def browse_section(section_id: str) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Video Details (تفاصيل الفيديو)", readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(title="Get Video Details (تفاصيل الفيديو)", readOnlyHint=True), meta=tool_meta())
 @track_request("get_video_details")
 async def get_video_details(video_id: int) -> str:
     """
@@ -935,7 +941,50 @@ async def get_video_details(video_id: int) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Series Details (تفاصيل البرامج والسلاسل)", readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(title="Play Video (تشغيل الفيديو)", readOnlyHint=True), meta=tool_meta())
+@track_request("play_video")
+async def play_video(video_id: int) -> str:
+    """
+    Play a video from Al Jazeera 360. In AI apps that support interactive views
+    (MCP Apps), this opens the official Al Jazeera 360 player inside the chat;
+    elsewhere it returns the watch link. Use when the user asks to watch or play something.
+
+    تشغيل فيديو من الجزيرة 360. في التطبيقات التي تدعم الواجهات التفاعلية يفتح المشغّل
+    الرسمي داخل المحادثة، وفي غيرها يعيد رابط المشاهدة.
+
+    Args:
+        video_id: The numeric ID of the video (from search_videos, browse_section, etc.)
+    """
+    try:
+        data = await client.get_vod_details(video_id)
+        vid = data.get("id") or video_id
+        watch_url = f"{PLATFORM_URL}/video/{vid}"
+        access = data.get("accessLevel", "UNKNOWN")
+        ep = data.get("episodeInformation") or {}
+        result = {
+            "id": vid,
+            "title": data.get("title", ""),
+            "description": data.get("description", ""),
+            "duration": format_duration(data.get("duration")),
+            "thumbnail": data.get("coverUrl") or data.get("thumbnailUrl", ""),
+            "series_title": (ep.get("seriesInformation") or {}).get("title"),
+            "series_id": (ep.get("seriesInformation") or {}).get("id"),
+            "episode_number": ep.get("episodeNumber"),
+            "access_level": access,
+            "requires_sign_in": access == "GRANTED_ON_SIGN_IN",
+            "watch_url": watch_url,
+            # Playback stays on the official player: streams are DRM-protected
+            # and IP-bound, so the page (not a stream URL) is what gets embedded.
+            "embed_url": watch_url,
+            "player": "Official Al Jazeera 360 player (embedded where the AI app allows it)",
+        }
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Error preparing playback for {video_id}: {e}")
+        return json.dumps({"error": str(e), "watch_url": f"{PLATFORM_URL}/video/{video_id}"}, ensure_ascii=False)
+
+
+@mcp.tool(annotations=ToolAnnotations(title="Get Series Details (تفاصيل البرامج والسلاسل)", readOnlyHint=True), meta=tool_meta())
 @track_request("get_series_details")
 async def get_series_details(series_id: int) -> str:
     """
@@ -979,7 +1028,7 @@ async def get_series_details(series_id: int) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Season Episodes (حلقات الموسم)", readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(title="Get Season Episodes (حلقات الموسم)", readOnlyHint=True), meta=tool_meta())
 @track_request("get_season_episodes")
 async def get_season_episodes(season_id: int, max_episodes: int = 20) -> str:
     """
@@ -1030,7 +1079,7 @@ async def get_season_episodes(season_id: int, max_episodes: int = 20) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Search Videos (البحث عن الفيديوهات)", readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(title="Search Videos (البحث عن الفيديوهات)", readOnlyHint=True), meta=tool_meta())
 @track_request("search_videos")
 async def search_videos(query: str, content_type: Optional[str] = None, max_results: int = 20) -> str:
     """
@@ -1055,9 +1104,16 @@ async def search_videos(query: str, content_type: Optional[str] = None, max_resu
     # Bound scan parameters — unbounded values fan out into real API calls.
     max_results = _bound(max_results, 1, 50, 20)
     try:
-        data = await client.search_content(query, page_size=max_results)
-        # Pass query for client-side relevance re-ranking
-        results = format_search_results(data, query=query, max_results=max_results)
+        # The platform search intermittently answers an identical query with
+        # its empty "no results" layout (about half of calls in testing), so
+        # retry a couple of times before concluding there are no matches.
+        results = []
+        for _attempt in range(3):
+            data = await client.search_content(query, page_size=max_results)
+            # Pass query for client-side relevance re-ranking
+            results = format_search_results(data, query=query, max_results=max_results)
+            if results:
+                break
         
         # Apply content_type filter if specified
         if content_type:
@@ -1169,7 +1225,7 @@ async def list_sections() -> str:
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Latest Episodes (أحدث الحلقات)", readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(title="Get Latest Episodes (أحدث الحلقات)", readOnlyHint=True), meta=tool_meta())
 @track_request("get_latest_episodes")
 async def get_latest_episodes(section_id: str = "AJA", count: int = 10) -> str:
     """
@@ -3414,6 +3470,10 @@ async def generate_series_schema(series_id: int) -> str:
 # MCP Resources
 # ============================================================================
 
+# Interactive view (MCP Apps) — see mcp_apps.py
+register_ui(mcp)
+
+
 @mcp.resource("aljazeera360://sections")
 async def sections_resource() -> str:
     """List of all available sections on Al Jazeera 360."""
@@ -3701,7 +3761,7 @@ async def api_health(request: Request):
     return JSONResponse({
         "status": "ok",
         "server": "aljazeera360-mcp",
-        "version": "2.0.1",
+        "version": "2.1.0",
         "transport": _transport_mode,
         "privacy_policy": "/privacy",
         "documentation": "/docs",

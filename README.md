@@ -54,8 +54,8 @@ The server ships with two tool profiles:
 
 | Profile | Tools | For whom | How |
 | :--- | :--- | :--- | :--- |
-| **Core** (default) | 8 discovery tools | End users asking AI assistants about content | Works out of the box |
-| **Full** | All 24 tools (+ SEO & analytics) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
+| **Core** (default) | 9 discovery tools | End users asking AI assistants about content | Works out of the box |
+| **Full** | All 25 tools (+ SEO & analytics) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
 
 A small default toolset keeps AI tool selection fast and accurate. Enable the full profile only if you need the SEO/analytics tools.
 
@@ -71,6 +71,24 @@ A small default toolset keeps AI tool selection fast and accurate. Enable the fu
 | `get_season_episodes` | Lists all episodes within a specific season |
 | `search_videos` | Full-text search across all content (Arabic & English), with optional content type filter |
 | `get_latest_episodes` | Returns the most recently published episodes from any section |
+| `play_video` | Opens the official Al Jazeera 360 player inside the chat (in AI apps that support interactive views); elsewhere returns the watch link |
+
+### Interactive view (MCP Apps)
+
+In AI apps that support the [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps) extension (Claude, ChatGPT and others), the discovery tools render an interactive Arabic view inside the chat instead of plain text:
+
+| View | Opened by | What the user can do |
+| :--- | :--- | :--- |
+| **Catalog** | `search_videos`, `browse_section`, `get_trending_content`, `get_latest_episodes` | Thumbnail cards in rows, section chips, an in-view search box |
+| **Series** | `get_series_details`, `get_season_episodes` | Poster and description, season tabs, the episode list |
+| **Video** | `get_video_details` | Details card with *Watch here*, *Open on Al Jazeera 360*, *All episodes*, *Ask about it* |
+| **Player** | `play_video` | The official aljazeera360.com player embedded in the chat |
+
+Every click calls the server's own tools, and the view tells the model what the user is looking at, so follow-up questions have context. It follows the host's light or dark theme and is right-to-left.
+
+**About playback.** The platform's streams are DRM-protected (Widevine / PlayReady), stream tokens are bound to the requesting IP address, and the platform API only accepts browser requests from aljazeera360.com. So the player embeds the official page rather than a raw stream. Playback, sign-in, ads and analytics all stay on Al Jazeera 360's own player. Whether an AI app allows protected video inside its sandbox differs by app. When it doesn't, the view shows the cover image and a *Watch on Al Jazeera 360* button instead of a broken player.
+
+Clients without MCP Apps support ignore the view and get the same JSON as before. Set `AJ360_ENABLE_UI=0` to switch the view off entirely.
 
 ### SEO & Metadata Tools (requires `AJ360_ENABLE_SEO_TOOLS=1`)
 
@@ -219,6 +237,7 @@ This server speaks the standard MCP protocol over `stdio` (local) and Streamable
 | `MCP_PORT` | No | `8080` | Port for the HTTP transport (cloud deployment). |
 | `AJ360_ALLOWED_HOST` | Cloud only | — | Public hostname of your deployment (no scheme). Required when self-hosting on a custom domain — the DNS-rebinding protection rejects unknown hosts with 421. |
 | `AJ360_ENABLE_SEO_TOOLS` | No | off | Set to `1` to register the 16 SEO/analytics tools (full profile). |
+| `AJ360_ENABLE_UI` | No | on | Set to `0` to turn off the interactive MCP Apps view (tools then return plain JSON only). |
 | `AJ360_ENABLE_DASHBOARD` | No | `true` | Enable/disable the analytics dashboard. |
 | `AJ360_DASHBOARD_PORT` | No | `9090` | Port for the analytics dashboard. |
 | `AJ360_DASHBOARD_TOKEN` | No | — | Shared secret for the analytics data endpoints (`/api/stats`, `/api/recent`). When set, callers must send `Authorization: Bearer <token>` or `?token=<token>`. **Strongly recommended for any public/cloud deployment.** |
