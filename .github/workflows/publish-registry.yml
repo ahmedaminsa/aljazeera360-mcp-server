@@ -1,0 +1,41 @@
+# Publishes server.json to the official MCP Registry
+# (https://registry.modelcontextprotocol.io).
+#
+# Run it from the Actions tab ("Publish to MCP Registry" → Run workflow)
+# after bumping "version" in server.json. Authentication uses GitHub's OIDC
+# token, which proves this repo belongs to ahmedaminsa and so may publish the
+# io.github.ahmedaminsa/* namespace. No secrets are needed.
+name: Publish to MCP Registry
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC token for the registry login
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mcp-publisher
+        run: |
+          curl -sL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" \
+            | tar xz mcp-publisher
+
+      - name: Validate server.json
+        run: ./mcp-publisher validate
+
+      - name: Log in (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish
+        run: ./mcp-publisher publish
+
+      - name: Confirm listing
+        run: |
+          sleep 5
+          curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.ahmedaminsa/aljazeera360-mcp-server" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); s=d['servers']; print('listed:', [x['server']['name']+' '+x['server']['version'] for x in s]); sys.exit(0 if s else 1)"
