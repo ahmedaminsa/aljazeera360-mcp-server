@@ -742,7 +742,7 @@ async def _enrich_with_vod_details(items: list, limit: Optional[int] = None) -> 
 # ----------------------------------------------------------------------------
 # Tool Profiles
 # ----------------------------------------------------------------------------
-# The 9 core discovery tools are always registered. The 16 SEO/analytics tools
+# The 10 core discovery tools are always registered. The 16 SEO/analytics tools
 # target content teams rather than end users, and a small default toolset keeps
 # AI tool selection accurate — so they are opt-in via AJ360_ENABLE_SEO_TOOLS.
 SEO_TOOLS_ENABLED = os.environ.get("AJ360_ENABLE_SEO_TOOLS", "").strip().lower() in ("1", "true", "yes")
@@ -1001,6 +1001,39 @@ async def play_video(video_id: int) -> str:
     except Exception as e:
         logger.error(f"Error preparing playback for {video_id}: {e}")
         return json.dumps({"error": str(e), "watch_url": f"{PLATFORM_URL}/video/{video_id}"}, ensure_ascii=False)
+
+
+@mcp.tool(annotations=ToolAnnotations(title="Playback Diagnostics (فحص التشغيل)", readOnlyHint=True), meta=tool_meta())
+@track_request("run_diagnostics")
+async def run_diagnostics(report: str = "") -> str:
+    """
+    Check whether this AI app can play Al Jazeera 360 videos inside the chat
+    (protected video / DRM, embedding the official player, fullscreen).
+    Use when the user says a video does not play in the chat. Call it with no arguments;
+    the interactive view runs the checks and shows the result.
+
+    فحص قدرة تطبيق الذكاء الاصطناعي على تشغيل فيديوهات الجزيرة 360 داخل المحادثة.
+    استخدمها عندما يقول المستخدم إن الفيديو لا يعمل داخل المحادثة.
+
+    Args:
+        report: Internal. Filled by the interactive view with its capability check; leave empty.
+    """
+    if report:
+        # Capability flags only (no IP, no personal data); the Worker logs the
+        # call to D1, which is how playback problems in real hosts get diagnosed.
+        logger.info("view diagnostics: %s", report[:500])
+        return json.dumps({"received": True}, ensure_ascii=False)
+    return json.dumps({
+        "diagnostics": True,
+        "checks": [
+            "Protected video (Widevine / PlayReady / FairPlay) inside the app's sandbox",
+            "Permission to embed the official aljazeera360.com player",
+            "Fullscreen and autoplay permissions",
+        ],
+        "note": ("The checks run in the interactive view. In AI apps without interactive views, "
+                 "videos open on aljazeera360.com."),
+        "platform_url": PLATFORM_URL,
+    }, ensure_ascii=False, indent=2)
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Get Series Details (تفاصيل البرامج والسلاسل)", readOnlyHint=True), meta=tool_meta())

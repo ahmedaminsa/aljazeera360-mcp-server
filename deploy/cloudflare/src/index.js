@@ -48,6 +48,8 @@ const MAX_QUERY_LEN = 200;
 /** Pick the most descriptive argument of a tool call for the `query` column. */
 function summarizeArgs(args) {
   if (!args || typeof args !== "object") return null;
+  // View diagnostics reports are capability flags; keep them whole.
+  if (args.report) return String(args.report).slice(0, 600);
   for (const key of ["query", "section_id", "sections", "host_name", "genre", "country"]) {
     if (args[key] != null && args[key] !== "") return String(args[key]).slice(0, MAX_QUERY_LEN);
   }

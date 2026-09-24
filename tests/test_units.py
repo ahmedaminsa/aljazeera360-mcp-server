@@ -57,9 +57,9 @@ def test_seo_tool_returns_function_unchanged_when_disabled():
     assert callable(server.audit_metadata_quality)
 
 
-def test_default_profile_registers_9_tools():
+def test_default_profile_registers_10_tools():
     tools = server.mcp._tool_manager._tools
-    assert len(tools) == 9 or os.environ.get("AJ360_ENABLE_SEO_TOOLS")
+    assert len(tools) == 10 or os.environ.get("AJ360_ENABLE_SEO_TOOLS")
 
 
 def test_dashboard_auth_denies_wrong_token():
@@ -91,6 +91,7 @@ import mcp_apps  # noqa: E402
 UI_TOOLS = {
     "search_videos", "browse_section", "get_trending_content", "get_latest_episodes",
     "get_series_details", "get_season_episodes", "get_video_details", "play_video",
+    "run_diagnostics",
 }
 
 
@@ -196,3 +197,10 @@ def test_trending_heroes_carry_links_and_title_art():
     assert hero["video_id"] == 99 and hero["series_id"] == 3920
     assert hero["title_image"] == "https://img/logo.png"
     assert hero["cta_text"] == "شاهد الآن"
+
+
+def test_diagnostics_tool_opens_the_view_and_accepts_reports():
+    opened = json.loads(asyncio.run(server.run_diagnostics()))
+    assert opened["diagnostics"] is True
+    ack = json.loads(asyncio.run(server.run_diagnostics(report="player vid=1;drm=no;frame=skipped")))
+    assert ack == {"received": True}

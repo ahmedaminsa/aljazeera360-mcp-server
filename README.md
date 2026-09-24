@@ -54,8 +54,8 @@ The server ships with two tool profiles:
 
 | Profile | Tools | For whom | How |
 | :--- | :--- | :--- | :--- |
-| **Core** (default) | 9 discovery tools | End users asking AI assistants about content | Works out of the box |
-| **Full** | All 25 tools (+ SEO & analytics) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
+| **Core** (default) | 10 discovery tools | End users asking AI assistants about content | Works out of the box |
+| **Full** | All 26 tools (+ SEO & analytics) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
 
 A small default toolset keeps AI tool selection fast and accurate. Enable the full profile only if you need the SEO/analytics tools.
 
@@ -72,6 +72,7 @@ A small default toolset keeps AI tool selection fast and accurate. Enable the fu
 | `search_videos` | Full-text search across all content (Arabic & English), with optional content type filter |
 | `get_latest_episodes` | Returns the most recently published episodes from any section |
 | `play_video` | Opens the official Al Jazeera 360 player inside the chat (in AI apps that support interactive views); elsewhere returns the watch link |
+| `run_diagnostics` | Checks what the AI app allows inside the chat (protected video, embedding the official player, fullscreen) and shows the result in the view |
 
 ### Interactive view (MCP Apps)
 

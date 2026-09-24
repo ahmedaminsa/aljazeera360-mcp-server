@@ -227,6 +227,14 @@ img{display:block}
 .below h1{font-weight:700;font-size:22px;margin:0 0 8px}
 .note{color:var(--muted);font-size:13px;margin:12px 0 0}
 
+/* ---- diagnostics ---- */
+table.diag{width:100%;border-collapse:collapse;font-size:15px}
+table.diag td{padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+table.diag td:first-child{font-weight:700}
+table.diag td:last-child{color:var(--muted);font-size:13px;direction:ltr;text-align:end}
+table.diag .ok{color:var(--primary);white-space:nowrap}
+table.diag .bad{color:#ff6b6b;white-space:nowrap}
+
 /* ---- states ---- */
 .state{padding:64px var(--gutter);text-align:center;color:var(--muted)}
 .spinner{width:44px;height:44px;margin:0 auto 14px;border-radius:50%;
@@ -369,7 +377,7 @@ const cards = (arr) => (arr || []).filter(x => x && x.id).map(card);
 /* ------------------------------------------------------------------ render */
 function esc(s){ return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 const history = [];
-let current = null, lastInput = {}, activeNav = "", initialTool = null, searchOpen = false, heroTimer = null;
+let current = null, lastInput = {}, activeNav = "", initialTool = null, searchOpen = false, heroTimer = null, hostInfo = null;
 
 function header(){
   return `<header class="hdr">
@@ -526,6 +534,12 @@ const views = {
         <button class="btn btn-ghost" data-act="ask" data-text="${esc("حدثني أكثر عن حلقة «" + d.title + "»")}">${ICON.ask} اسأل عنها</button>`,
     });
   },
+  run_diagnostics(d){
+    tellModel("User opened the Al Jazeera 360 playback diagnostics.");
+    setTimeout(runDiagnostics, 0);
+    return `<div class="below"><h1>فحص التشغيل داخل المحادثة</h1>
+      <div id="diag"><div class="state"><div class="spinner"></div>جارٍ فحص ما يسمح به هذا التطبيق…</div></div></div>`;
+  },
   play_video(d){
     tellModel(`User is watching "${d.title}" (video_id ${d.id}) in the embedded Al Jazeera 360 player.`);
     setTimeout(() => startPlayer(d), 0);
@@ -554,19 +568,56 @@ function episodesHTML(d){
         ${lockText(e.access_level) ? `<span class="chip" style="direction:rtl">${esc(lockText(e.access_level))}</span>` : ""}</div></div></button>`).join("")}</div>`;
 }
 
-async function hasProtectedPlayback(){
-  if (!navigator.requestMediaKeySystemAccess) return false;
+/* ------------------------------------------------------ playback diagnostics */
+// What the host sandbox allows decides whether the official (DRM) player can
+// run inside the chat. These probes collect capability flags only: no IP
+// address, no personal data.
+async function probe(){
   const cfg = [{initDataTypes:["cenc"], videoCapabilities:[{contentType:'video/mp4; codecs="avc1.42E01E"'}]}];
-  for (const ks of ["com.widevine.alpha","com.microsoft.playready","com.apple.fps.1_0","com.apple.fps"]) {
-    try { await navigator.requestMediaKeySystemAccess(ks, cfg); return true; } catch(e){}
+  const eme = {};
+  for (const [k, ks] of [["widevine","com.widevine.alpha"],["playready","com.microsoft.playready"],["fairplay","com.apple.fps.1_0"],["clearkey","org.w3.clearkey"]]) {
+    try {
+      if (!navigator.requestMediaKeySystemAccess) throw {name:"NoEME"};
+      await navigator.requestMediaKeySystemAccess(ks, cfg); eme[k] = "yes";
+    } catch(e){ eme[k] = ({SecurityError:"blocked", NotSupportedError:"unsupported", NotAllowedError:"denied"})[e && e.name] || (e && e.name) || "no"; }
   }
-  return false;
+  const pp = document.permissionsPolicy || document.featurePolicy;
+  const allows = (f) => pp && pp.allowsFeature ? (pp.allowsFeature(f) ? "yes" : "no") : "?";
+  return {  // most important first: the Worker logs a bounded string
+    host: hostInfo ? `${hostInfo.name || "?"} ${hostInfo.version || ""}`.trim() : (openai ? "openai-apps-sdk" : "?"),
+    origin: location.hostname.replace(/^[^.]+\.(?=[^.]+\.[^.]+$)/, "*."),
+    drm: ["widevine","playready","fairplay"].some(k => eme[k] === "yes") ? "yes" : "no",
+    widevine: eme.widevine, playready: eme.playready, fairplay: eme.fairplay, clearkey: eme.clearkey,
+    pp_eme: allows("encrypted-media"), pp_fullscreen: allows("fullscreen"), pp_autoplay: allows("autoplay"),
+    mse: window.MediaSource && MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E"') ? "yes" : "no",
+    fullscreen_api: document.fullscreenEnabled ? "yes" : "no",
+  };
+}
+function compact(o){ return Object.entries(o).map(([k, v]) => `${k}=${v}`).join(";"); }
+function report(kind, o){ callTool("run_diagnostics", {report: `${kind} ${compact(o)}`}).catch(() => {}); }
+
+// Watches an iframe: "loaded", "blocked" (host CSP refused the frame) or "timeout".
+function watchFrame(f, ms){
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (r) => { if (!done) { done = true; document.removeEventListener("securitypolicyviolation", onCsp); resolve(r); } };
+    const onCsp = (e) => { if (/frame/.test(e.violatedDirective || e.effectiveDirective || "") && String(e.blockedURI || "").includes("aljazeera360")) finish("blocked"); };
+    document.addEventListener("securitypolicyviolation", onCsp);
+    f.addEventListener("load", () => setTimeout(() => finish("loaded"), 150));
+    setTimeout(() => finish("timeout"), ms);
+  });
+}
+function fallback(box, d, text){
+  const o = box.querySelector(".overlay") || box.appendChild(Object.assign(document.createElement("div"), {className: "overlay"}));
+  o.innerHTML = `<div>${esc(text)}</div>
+    <button class="btn btn-primary" data-act="open" data-url="${esc(d.watch_url)}">${ICON.play} شاهد على الجزيرة 360</button>`;
 }
 async function startPlayer(d){
   const box = document.getElementById("player"); if (!box) return;
-  if (!(await hasProtectedPlayback())) {
-    box.querySelector(".overlay").innerHTML = `<div>هذا التطبيق لا يسمح بتشغيل الفيديو المحمي داخل المحادثة.</div>
-      <button class="btn btn-primary" data-act="open" data-url="${esc(d.watch_url)}">${ICON.play} شاهد على الجزيرة 360</button>`;
+  const p = await probe();
+  if (p.drm !== "yes") {
+    fallback(box, d, "هذا التطبيق لا يسمح بتشغيل الفيديو المحمي داخل المحادثة.");
+    report("player", {vid: d.id, frame: "skipped", ...p});
     return;
   }
   const f = document.createElement("iframe");
@@ -574,8 +625,38 @@ async function startPlayer(d){
   f.allow = "autoplay; encrypted-media; fullscreen; picture-in-picture";
   f.allowFullscreen = true; f.referrerPolicy = "strict-origin-when-cross-origin";
   f.title = d.title || "Al Jazeera 360";
-  f.addEventListener("load", () => { box.querySelectorAll(".overlay,.poster").forEach(n => n.remove()); });
+  const watched = watchFrame(f, 20000);
   box.appendChild(f);
+  const frame = await watched;
+  if (frame === "blocked") { f.remove(); fallback(box, d, "هذا التطبيق لا يسمح بعرض مشغّل الجزيرة 360 داخل المحادثة."); }
+  else box.querySelectorAll(".overlay,.poster").forEach(n => n.remove());
+  report("player", {vid: d.id, frame, ...p});
+}
+
+async function runDiagnostics(){
+  const el = document.getElementById("diag"); if (!el) return;
+  const p = await probe();
+  let frame = "skipped";
+  const f = document.createElement("iframe");
+  f.src = SITE + "/"; f.allow = "autoplay; encrypted-media; fullscreen";
+  f.style.cssText = "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;border:0";
+  const watched = watchFrame(f, 20000); document.body.appendChild(f); frame = await watched; f.remove();
+  const ok = (v) => v === "yes" || v === "loaded";
+  const row = (label, v, hint) => `<tr><td>${esc(label)}</td><td class="${ok(v) ? "ok" : "bad"}">${ok(v) ? "✓ متاح" : "✗ غير متاح"}</td><td>${esc(hint || v)}</td></tr>`;
+  const verdict = p.drm === "yes" && frame === "loaded"
+    ? "المشغّل الرسمي يقدر يشتغل داخل هذه المحادثة."
+    : frame === "blocked" ? "هذا التطبيق يمنع عرض موقع الجزيرة 360 داخل المحادثة، فالتشغيل يتم على الموقع."
+    : p.drm !== "yes" ? "هذا التطبيق لا يسمح بتشغيل الفيديو المحمي (DRM) داخل المحادثة، فالتشغيل يتم على الموقع."
+    : "تعذّر التأكد من تحميل مشغّل الجزيرة 360 داخل المحادثة.";
+  el.innerHTML = `<p class="desc" style="margin:0 0 16px">${esc(verdict)}</p>
+    <table class="diag"><tbody>
+      ${row("الفيديو المحمي — Widevine", p.widevine)}${row("الفيديو المحمي — PlayReady", p.playready)}${row("الفيديو المحمي — FairPlay", p.fairplay)}
+      ${row("إذن الفيديو المحمي من التطبيق", p.pp_eme)}${row("عرض موقع الجزيرة 360 داخل المحادثة", frame)}
+      ${row("ملء الشاشة", p.pp_fullscreen === "?" ? p.fullscreen_api : p.pp_fullscreen)}${row("التشغيل التلقائي", p.pp_autoplay)}
+      ${row("تشغيل البث (MSE)", p.mse)}</tbody></table>
+    <p class="note">التطبيق المضيف: ${esc(p.host)} · ${esc(p.origin)}</p>`;
+  reportSize();
+  report("diagnostics", {frame, ...p});
 }
 
 let firstEpisode = null;
@@ -613,6 +694,7 @@ function guessView(d){
   if (d.seasons) return views.get_series_details;
   if (d.episodes) return views.get_season_episodes;
   if (d.embed_url) return views.play_video;
+  if (d.diagnostics) return views.run_diagnostics;
   if (d.watch_url && d.title) return views.get_video_details;
   return null;
 }
@@ -669,6 +751,7 @@ $app.addEventListener("submit", (ev) => {
       appCapabilities: {availableDisplayModes: ["inline", "fullscreen"]},
     });
     hostCaps = (init && init.hostCapabilities) || {};
+    hostInfo = (init && init.hostInfo) || null;
     const ti = init && init.hostContext && init.hostContext.toolInfo;
     initialTool = (ti && ti.tool && ti.tool.name) || null;
     notify("ui/notifications/initialized", {});
