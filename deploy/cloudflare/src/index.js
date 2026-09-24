@@ -187,7 +187,21 @@ function authorized(request, url, env) {
   return bearer === token || url.searchParams.get("token") === token;
 }
 
+// Retention promised in the privacy policy (/privacy): 180 days.
+const RETENTION_DAYS = 180;
+
 export default {
+  // Daily cron (wrangler.jsonc "triggers"): delete analytics past retention.
+  async scheduled(event, env, ctx) {
+    if (!env.ANALYTICS_DB) return;
+    const cutoff = new Date(Date.now() - RETENTION_DAYS * 86400_000).toISOString();
+    ctx.waitUntil(
+      env.ANALYTICS_DB.prepare("DELETE FROM events WHERE ts < ?").bind(cutoff).run()
+        .then((r) => console.log(`retention: deleted ${r.meta?.changes ?? 0} rows older than ${cutoff}`))
+        .catch((err) => console.error("retention failed:", err.message))
+    );
+  },
+
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 

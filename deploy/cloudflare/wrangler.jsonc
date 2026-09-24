@@ -40,6 +40,8 @@
       "database_id": "d244d8b7-6934-49c5-834f-95b2ca8b0366"
     }
   ],
+  // Daily analytics retention cleanup (see scheduled() in src/index.js).
+  "triggers": { "crons": ["17 3 * * *"] },
   "vars": {
     // MUST match the public hostname of this Worker, or the server's
     // DNS-rebinding protection rejects requests with 421.

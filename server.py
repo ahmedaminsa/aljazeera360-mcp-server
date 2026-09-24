@@ -3622,27 +3622,43 @@ PRIVACY_HTML = """<!DOCTYPE html>
 </head>
 <body>
     <h1>Privacy Policy</h1>
-    <p>Last updated: June 8, 2026</p>
-    
-    <p>This Privacy Policy describes how the <strong>Al Jazeera 360 MCP Server</strong> handles data. Our server is an open-source tool designed to connect AI assistants to the public catalog of Al Jazeera 360.</p>
-    
-    <h2>1. Data Collection and Processing</h2>
-    <p>The Al Jazeera 360 MCP Server does not collect, store, or share any personal data or personally identifiable information (PII). All operations are performed programmatically to fetch public streaming metadata directly from Al Jazeera 360's public API endpoints.</p>
-    
-    <h2>2. Authentication and Security</h2>
-    <p>Any API keys or tokens (such as <code>AJ360_REFRESH_TOKEN</code>) provided to this server are used strictly to authenticate requests with the official Al Jazeera 360 backend on behalf of the user. These tokens are stored securely in your environment variables and are never transmitted to any third party other than Al Jazeera 360.</p>
-    
-    <h2>3. Client-Side Analytics & Data Retention</h2>
-    <p>The server includes a local, self-hosted analytics dashboard to monitor request rates and latency. This analytical data is stored entirely in memory within the running container and is completely cleared/deleted when the container restarts. No data is persisted long-term, and no analytics data is ever transmitted to external tracking services or third parties.</p>
-    
-    <h2>4. Contact Information</h2>
-    <p>If you have any questions or concerns about this Privacy Policy or how data is handled by this server, please contact us via email at: <a href="mailto:support@aljazeera360.com">support@aljazeera360.com</a> or open an issue in our public GitHub repository.</p>
+    <p>Last updated: September 25, 2026</p>
 
-    <h2>5. Changes to This Policy</h2>
-    <p>Since this is an open-source project, any future changes to this policy will be documented in our public GitHub repository. You are encouraged to review this policy periodically.</p>
-    
+    <p>This Privacy Policy describes how the <strong>Al Jazeera 360 MCP Server</strong> handles data. The server connects AI assistants (such as Claude) to the public catalog of Al Jazeera 360. It is open source; the code that does everything described here is public on GitHub.</p>
+
+    <h2>1. What the server does with your requests</h2>
+    <p>When an AI assistant calls a tool, the server fetches public catalog information (titles, descriptions, episodes, images, watch links) from Al Jazeera 360's platform and returns it. The server does not ask for, receive or store your name, email, account, IP address, or the content of your conversation with the AI assistant. It does not read the assistant's memory, chat history or files.</p>
+
+    <h2>2. Usage analytics we keep</h2>
+    <p>To understand how the service is used and to fix problems, each request is logged with only these fields:</p>
+    <ul>
+        <li>Time of the request</li>
+        <li>Which tool was called, and its main argument (for example a search term such as "الدحيح", or a video or series number)</li>
+        <li>The name and version of the AI application, as it reports itself (for example "Anthropic/ClaudeAI 1.0.0")</li>
+        <li>The country of the connecting server, as provided by our hosting provider (for assistants like Claude this is the assistant's data centre, not your location)</li>
+        <li>The connecting software's user-agent string</li>
+        <li>A random session number that groups the requests of one conversation; it is not linked to you</li>
+        <li>For the interactive video view only: technical playback capabilities of the app (for example whether protected video or embedding is allowed)</li>
+    </ul>
+    <p><strong>IP addresses are not stored.</strong> Please do not type personal information into search requests, since search terms are logged as written.</p>
+
+    <h2>3. Where it is stored and for how long</h2>
+    <p>Analytics are stored in a Cloudflare D1 database operated by the maintainers. Records older than 180 days are deleted automatically every day. The data is used only to measure usage and improve the service, and is never sold or shared with third parties or advertising services. Only aggregate figures (for example "most searched programmes") may be shared publicly or with Al Jazeera 360 teams.</p>
+
+    <h2>4. Service providers</h2>
+    <p>The server runs on Cloudflare (hosting and the analytics database) and requests catalog data from Al Jazeera 360's platform provider. Watching a video opens the official Al Jazeera 360 website or player, which has <a href="https://www.aljazeera360.com">its own privacy policy</a>.</p>
+
+    <h2>5. Credentials</h2>
+    <p>The hosted service uses a platform key held as a server secret. Users never provide credentials to it. If you self-host the open-source server with your own tokens, they stay in your environment variables and are sent only to Al Jazeera 360's platform.</p>
+
+    <h2>6. Contact</h2>
+    <p>For questions, or to ask for data to be deleted, contact <a href="mailto:support@aljazeera360.com">support@aljazeera360.com</a> or open an issue in the public GitHub repository.</p>
+
+    <h2>7. Changes to this policy</h2>
+    <p>Changes are published on this page and in the GitHub repository, with the date above updated.</p>
+
     <footer>
-        <p>&copy; 2026 Al Jazeera 360 MCP Server Contributors. This tool is independent and not officially affiliated with Al Jazeera Network.</p>
+        <p>&copy; 2026 Al Jazeera 360 MCP Server Contributors.</p>
     </footer>
 </body>
 </html>
