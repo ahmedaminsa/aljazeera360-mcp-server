@@ -1,5 +1,7 @@
 # Claude Connectors Directory — submission kit
 
+> **Status: parked.** The project stays an unofficial community connector (listed in the MCP Registry only). This kit is kept in case Al Jazeera 360 decides to publish an official connector later.
+
 Ready answers for each step of Anthropic's submission portal
 (<https://claude.ai/admin-settings/directory/submissions/new>).
 Requirements checked against <https://claude.com/docs/connectors/building/submission>

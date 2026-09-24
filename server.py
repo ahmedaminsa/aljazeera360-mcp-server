@@ -3652,13 +3652,13 @@ PRIVACY_HTML = """<!DOCTYPE html>
     <p>The hosted service uses a platform key held as a server secret. Users never provide credentials to it. If you self-host the open-source server with your own tokens, they stay in your environment variables and are sent only to Al Jazeera 360's platform.</p>
 
     <h2>6. Contact</h2>
-    <p>For questions, or to ask for data to be deleted, contact <a href="mailto:support@aljazeera360.com">support@aljazeera360.com</a> or open an issue in the public GitHub repository.</p>
+    <p>For questions, or to ask for data to be deleted, open an issue in the public <a href="https://github.com/ahmedaminsa/aljazeera360-mcp-server/issues">GitHub repository</a>.</p>
 
     <h2>7. Changes to this policy</h2>
     <p>Changes are published on this page and in the GitHub repository, with the date above updated.</p>
 
     <footer>
-        <p>&copy; 2026 Al Jazeera 360 MCP Server Contributors.</p>
+        <p>&copy; 2026 Al Jazeera 360 MCP Server Contributors. Unofficial community project, not affiliated with, endorsed by, or sponsored by Al Jazeera Media Network.</p>
     </footer>
 </body>
 </html>
