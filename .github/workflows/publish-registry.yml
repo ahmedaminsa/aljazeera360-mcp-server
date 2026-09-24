@@ -37,10 +37,24 @@ jobs:
         run: ./mcp-publisher login github-oidc
 
       - name: Publish
-        run: ./mcp-publisher publish
+        run: |
+          # Re-running for a version that is already listed is not an error.
+          if ! out=$(./mcp-publisher publish 2>&1); then
+            echo "$out"
+            echo "$out" | grep -q "duplicate version" && { echo "Version already published — nothing to do."; exit 0; }
+            exit 1
+          fi
+          echo "$out"
 
       - name: Confirm listing
         run: |
-          sleep 5
-          curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.ahmedaminsa/aljazeera360-mcp-server" \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); s=d['servers']; print('listed:', [x['server']['name']+' '+x['server']['version'] for x in s]); sys.exit(0 if s else 1)"
+          # The registry's search index takes up to a minute to show a new version.
+          V=$(python3 -c "import json;print(json.load(open('server.json'))['version'])")
+          for i in $(seq 1 12); do
+            if curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.ahmedaminsa/aljazeera360-mcp-server" \
+                | python3 -c "import json,sys; v=[x['server']['version'] for x in json.load(sys.stdin)['servers']]; print('listed versions:', v); sys.exit(0 if '$V' in v else 1)"; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Version $V not visible in the registry search yet."; exit 1
