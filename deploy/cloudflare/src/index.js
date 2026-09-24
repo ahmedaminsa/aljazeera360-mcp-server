@@ -168,6 +168,15 @@ async function usageReport(env, url) {
   };
 }
 
+function isInitialize(bodyText) {
+  try {
+    const parsed = JSON.parse(bodyText);
+    return (Array.isArray(parsed) ? parsed : [parsed]).some((m) => m && m.method === "initialize");
+  } catch {
+    return false;
+  }
+}
+
 function authorized(request, url, env) {
   const token = env.AJ360_DASHBOARD_TOKEN;
   if (!token) return false; // fail closed when unset
@@ -206,7 +215,17 @@ export default {
     // Single named instance: MCP streamable-http sessions must keep
     // hitting the same backend, and one container serves this fine.
     const container = env.AJ360_CONTAINER.getByName("mcp");
-    const response = await container.fetch(request);
+    let response = await container.fetch(request);
+
+    // The server runs stateless (no mcp-session-id), so a sleeping or
+    // redeployed container can never strand a client on a dead session.
+    // Analytics still wants to group a conversation's calls, so the Worker
+    // hands out its own id on `initialize`; clients echo it back and the
+    // stateless server ignores it, so a stale id can never fail a request.
+    if (bodyText && !response.headers.get("mcp-session-id") && isInitialize(bodyText)) {
+      response = new Response(response.body, response);
+      response.headers.set("mcp-session-id", crypto.randomUUID());
+    }
 
     if (bodyText) ctx.waitUntil(logEvents(env, request, response, bodyText));
     return response;

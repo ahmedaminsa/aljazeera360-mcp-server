@@ -262,6 +262,7 @@ This server speaks the standard MCP protocol over `stdio` (local) and Streamable
 | `AJ360_ALLOWED_HOST` | Cloud only | — | Public hostname of your deployment (no scheme). Required when self-hosting on a custom domain — the DNS-rebinding protection rejects unknown hosts with 421. |
 | `AJ360_ENABLE_SEO_TOOLS` | No | off | Set to `1` to register the 16 SEO/analytics tools (full profile). |
 | `AJ360_ENABLE_UI` | No | on | Set to `0` to turn off the interactive MCP Apps view (tools then return plain JSON only). |
+| `AJ360_STATELESS` | No | on | HTTP transport runs stateless, so container sleeps and redeploys never leave clients on a dead session. Set to `0` for classic session mode. |
 | `AJ360_ENABLE_DASHBOARD` | No | `true` | Enable/disable the analytics dashboard. |
 | `AJ360_DASHBOARD_PORT` | No | `9090` | Port for the analytics dashboard. |
 | `AJ360_DASHBOARD_TOKEN` | No | — | Shared secret for the analytics data endpoints (`/api/stats`, `/api/recent`). When set, callers must send `Authorization: Bearer <token>` or `?token=<token>`. **Strongly recommended for any public/cloud deployment.** |

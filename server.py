@@ -697,11 +697,19 @@ if _transport_mode in ("streamable-http", "sse"):
             "https://claude.com",
         ]
     )
+    # Stateless HTTP: every request stands on its own, so there is no session
+    # to lose when a serverless container sleeps or is redeployed. With
+    # sessions, clients holding an old session id got 404 "Session not found"
+    # and some (e.g. the claude.ai connector when loading an MCP Apps view)
+    # failed the tool call instead of reconnecting. The tools are pure
+    # request/response, so nothing needs server-side session state.
+    # Set AJ360_STATELESS=0 to restore session mode.
     mcp = FastMCP(
         "aljazeera360",
         host="0.0.0.0",
         port=int(os.environ.get("MCP_PORT", "8080")),
         transport_security=_security,
+        stateless_http=os.environ.get("AJ360_STATELESS", "1").strip().lower() not in ("0", "false", "no"),
     )
 else:
     mcp = FastMCP("aljazeera360")

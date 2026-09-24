@@ -56,9 +56,11 @@ and update the `remotes[0].url` in the repo's `server.json` to match.
 - **Analytics reset**: the SQLite analytics DB lives on the container's
   ephemeral disk and resets when the instance sleeps. Fine for spot-checking,
   not for long-term stats.
-- **Sessions**: a single named instance (`getByName("mcp")`) keeps MCP
-  streamable-http sessions on one backend. Don't raise `max_instances`
-  without adding session-aware routing.
+- **Sessions**: the server runs stateless (`AJ360_STATELESS`, on by
+  default), so a sleeping or redeployed container never strands a client on
+  an expired session. The Worker still issues an `mcp-session-id` on
+  `initialize`, used only to group a conversation's calls in the analytics;
+  the server ignores it, so a stale id can never fail a request.
 - **Custom domain**: add a route/custom domain in the Cloudflare dashboard,
   then set `AJ360_ALLOWED_HOST` to that domain and redeploy.
 - The `@cloudflare/containers` API is still evolving; if a deploy fails after
