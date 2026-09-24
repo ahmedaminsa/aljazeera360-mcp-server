@@ -166,3 +166,33 @@ def test_search_retries_when_platform_returns_empty_layout():
         server.client.search_content = old
     assert len(calls) >= 2
     assert any(r["id"] == "7" for r in out["results"])
+
+
+def test_view_uses_the_aljazeera360_design_system():
+    html = mcp_apps.APP_HTML
+    assert "AlJazeera-Regular.ttf" in html and "AlJazeera-Bold.ttf" in html
+    assert "#00B7D4" in html            # platform primary colour
+    assert "AJ_360_White_Logo" in html  # official logo
+    domains = mcp_apps.RESOURCE_META["ui"]["csp"]["resourceDomains"]
+    assert "https://static.diceplatform.com" in domains       # fonts
+    assert "https://content-images.onvesper.com" in domains   # logo
+
+
+def test_trending_heroes_carry_links_and_title_art():
+    async def fake_home(items_per_bucket=12):
+        return {"heroes": [{
+            "title": "مع تميم", "description": "d", "imageUrl": "https://img/bg.jpg",
+            "titleImage": "https://img/logo.png", "ctaText": "شاهد الآن",
+            "link": {"event": {"type": "VOD", "id": 99, "title": "ep",
+                               "episodeInformation": {"seriesInformation": {"id": 3920}}}},
+        }], "buckets": []}
+
+    old = server.client.get_home_content
+    try:
+        server.client.get_home_content = fake_home
+        hero = json.loads(asyncio.run(server.get_trending_content()))["featured"][0]
+    finally:
+        server.client.get_home_content = old
+    assert hero["video_id"] == 99 and hero["series_id"] == 3920
+    assert hero["title_image"] == "https://img/logo.png"
+    assert hero["cta_text"] == "شاهد الآن"

@@ -777,11 +777,22 @@ async def get_trending_content() -> str:
         
         # Process heroes (featured content)
         for hero in data.get("heroes", []):
-            result["featured"].append({
+            event = ((hero.get("link") or {}).get("event") or {})
+            series_info = (event.get("episodeInformation") or {}).get("seriesInformation") or {}
+            featured = {
                 "title": hero.get("title", ""),
                 "description": hero.get("description", ""),
-                "image": hero.get("imageUrl", ""),
-            })
+                "image": hero.get("imageUrl") or (hero.get("background") or {}).get("imageUrl", ""),
+                "title_image": hero.get("titleImage", ""),
+                "cta_text": hero.get("ctaText") or (hero.get("primaryButton") or {}).get("ctaText", ""),
+            }
+            if event.get("type") == "VOD" and event.get("id"):
+                featured["video_id"] = event["id"]
+                featured["video_title"] = event.get("title", "")
+                featured["watch_url"] = f"{PLATFORM_URL}/video/{event['id']}"
+            if series_info.get("id"):
+                featured["series_id"] = series_info["id"]
+            result["featured"].append(featured)
         
         # Process content buckets
         for bucket in data.get("buckets", []):
@@ -1055,6 +1066,7 @@ async def get_season_episodes(season_id: int, max_episodes: int = 20) -> str:
                 "duration_seconds": ep.get("duration"),
                 "episode_number": ep.get("episodeInformation", {}).get("episodeNumber") if ep.get("episodeInformation") else None,
                 "thumbnail": ep.get("thumbnailUrl", ""),
+                "published_date": ep.get("publishedDate", ""),
                 "watch_url": f"{PLATFORM_URL}/video/{ep.get('id')}",
                 "access_level": ep.get("accessLevel", "UNKNOWN"),
             })

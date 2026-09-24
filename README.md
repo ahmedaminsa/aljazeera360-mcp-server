@@ -84,11 +84,35 @@ In AI apps that support the [MCP Apps](https://modelcontextprotocol.io/docs/exte
 | **Video** | `get_video_details` | Details card with *Watch here*, *Open on Al Jazeera 360*, *All episodes*, *Ask about it* |
 | **Player** | `play_video` | The official aljazeera360.com player embedded in the chat |
 
-Every click calls the server's own tools, and the view tells the model what the user is looking at, so follow-up questions have context. It follows the host's light or dark theme and is right-to-left.
+The view uses the aljazeera360.com design system, read from the live site: the AlJazeera typeface (Regular and Bold), the black background with the platform's `#00B7D4` primary colour, the official logo, calligraphy title art on home banners, poster rows, 16:9 episode cards, season tabs and duration/date chips. It is right-to-left, and it stays in the site's dark look whatever the host's theme.
+
+Every click calls the server's own tools, and the view tells the model what the user is looking at, so follow-up questions have context.
 
 **About playback.** The platform's streams are DRM-protected (Widevine / PlayReady), stream tokens are bound to the requesting IP address, and the platform API only accepts browser requests from aljazeera360.com. So the player embeds the official page rather than a raw stream. Playback, sign-in, ads and analytics all stay on Al Jazeera 360's own player. Whether an AI app allows protected video inside its sandbox differs by app. When it doesn't, the view shows the cover image and a *Watch on Al Jazeera 360* button instead of a broken player.
 
 Clients without MCP Apps support ignore the view and get the same JSON as before. Set `AJ360_ENABLE_UI=0` to switch the view off entirely.
+
+### Features at a glance
+
+**For viewers**
+- Browse the home page inside the chat: hero banners, *Now showing*, *Latest episodes*, *Most watched* and the other editorial rows.
+- Search in Arabic or English from the view, or by asking the AI.
+- Open any programme to see all seasons and episodes, with duration and publish date.
+- Watch on the official player inside the chat, or in one click on aljazeera360.com.
+- Ask the AI about what's on screen: it knows which programme or episode is open.
+
+**For Al Jazeera 360**
+- Every play, sign-in, ad and view is counted by the official player and site analytics, because playback never leaves them.
+- Brand-consistent: same fonts, colours, logo and layout as the site and apps.
+- A new discovery channel: users of Claude, ChatGPT and other AI apps reach the catalogue without leaving the conversation.
+- Editorial choices carry over: the home banners and rows are the ones the team curates in Vesper.
+- Usage is measurable: the Worker logs which tools, searches and titles AI users open (see *Usage analytics*).
+
+**Technical**
+- Open standard (MCP Apps) and one codebase for every compatible AI app. No app-store submission per platform.
+- Safe by design: the view runs in the host's sandbox, may load only the platform's image and font hosts, and embeds only aljazeera360.com.
+- Backwards compatible: AI apps without UI support get the same JSON as before, and `AJ360_ENABLE_UI=0` turns the view off.
+- No build step: the view is one self-contained HTML file inside `mcp_apps.py`.
 
 ### SEO & Metadata Tools (requires `AJ360_ENABLE_SEO_TOOLS=1`)
 
