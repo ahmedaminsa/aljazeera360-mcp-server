@@ -3814,7 +3814,7 @@ async def api_health(request: Request):
     return JSONResponse({
         "status": "ok",
         "server": "aljazeera360-mcp",
-        "version": "2.1.0",
+        "version": "2.1.1",
         "transport": _transport_mode,
         "privacy_policy": "/privacy",
         "documentation": "/docs",

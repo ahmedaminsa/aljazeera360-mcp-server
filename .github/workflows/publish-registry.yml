@@ -1,7 +1,7 @@
 # Publishes server.json to the official MCP Registry
 # (https://registry.modelcontextprotocol.io).
 #
-# Run it from the Actions tab ("Publish to MCP Registry" → Run workflow)
+# Runs when server.json changes (bump "version"), or from the Actions tab ("Publish to MCP Registry" → Run workflow)
 # after bumping "version" in server.json. Authentication uses GitHub's OIDC
 # token, which proves this repo belongs to ahmedaminsa and so may publish the
 # io.github.ahmedaminsa/* namespace. No secrets are needed.
@@ -9,6 +9,11 @@ name: Publish to MCP Registry
 
 on:
   workflow_dispatch:
+  # Also publishes automatically when server.json changes on these branches,
+  # so a version bump is enough (works from a phone, no Actions tab needed).
+  push:
+    branches: [main, claude/mcp-public-improvements-IwyZR]
+    paths: [server.json]
 
 permissions:
   id-token: write   # OIDC token for the registry login
