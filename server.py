@@ -33,6 +33,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
 # Analytics & Request Tracking
+from mcp_apps import register_ui, tool_meta
 from analytics import tracker, track_request, start_dashboard, ENABLE_DASHBOARD, DASHBOARD_PORT, DASHBOARD_HTML
 
 # Configure logging
@@ -624,12 +625,17 @@ def format_search_results(data: dict, query: str = "", max_results: int = 20) ->
                 action = attrs.get("action", {})
                 action_data = action.get("data", {})
                 raw_id = action_data.get("id", "")
-                vod_id = raw_id.replace("VOD#", "").replace("SERIES#", "")
+                vod_id = raw_id.replace("VOD#", "").replace("SERIES#", "").replace("EVENT#", "")
                 content_type = action_data.get("type", "VOD")
                 
                 final_title = title or action_data.get("title", "")
                 if final_title:
-                    url = f"{PLATFORM_URL}/video/{vod_id}" if content_type == "VOD" else f"{PLATFORM_URL}/series/{vod_id}"
+                    if content_type == "VOD":
+                        url = f"{PLATFORM_URL}/video/{vod_id}"
+                    elif content_type == "LIVE_EVENT":
+                        url = f"{PLATFORM_URL}/live/{vod_id}"
+                    else:
+                        url = f"{PLATFORM_URL}/series/{vod_id}"
                     results.append({
                         "title": final_title,
                         "series": series_title,
@@ -670,10 +676,8 @@ if _transport_mode in ("streamable-http", "sse"):
     _allowed_hosts = [
         "localhost", "localhost:*",
         "127.0.0.1", "127.0.0.1:*",
-        "aljazeera360-mcp-server-production.up.railway.app",  # Railway production domain
-        "aljazeera360-mcp-server-production.up.railway.app:*",
-        "aljazeera360-mcp.up.railway.app",
-        "aljazeera360-mcp.up.railway.app:*",
+        "aljazeera360-mcp.ahmed-26d.workers.dev",  # Cloudflare production domain
+        "aljazeera360-mcp.ahmed-26d.workers.dev:*",
     ]
     # Add any custom host from environment if deployed elsewhere
     _custom_host = os.environ.get("AJ360_ALLOWED_HOST")
@@ -693,11 +697,19 @@ if _transport_mode in ("streamable-http", "sse"):
             "https://claude.com",
         ]
     )
+    # Stateless HTTP: every request stands on its own, so there is no session
+    # to lose when a serverless container sleeps or is redeployed. With
+    # sessions, clients holding an old session id got 404 "Session not found"
+    # and some (e.g. the claude.ai connector when loading an MCP Apps view)
+    # failed the tool call instead of reconnecting. The tools are pure
+    # request/response, so nothing needs server-side session state.
+    # Set AJ360_STATELESS=0 to restore session mode.
     mcp = FastMCP(
         "aljazeera360",
         host="0.0.0.0",
         port=int(os.environ.get("MCP_PORT", "8080")),
         transport_security=_security,
+        stateless_http=os.environ.get("AJ360_STATELESS", "1").strip().lower() not in ("0", "false", "no"),
     )
 else:
     mcp = FastMCP("aljazeera360")
@@ -730,7 +742,7 @@ async def _enrich_with_vod_details(items: list, limit: Optional[int] = None) -> 
 # ----------------------------------------------------------------------------
 # Tool Profiles
 # ----------------------------------------------------------------------------
-# The 8 core discovery tools are always registered. The 16 SEO/analytics tools
+# The 10 core discovery tools are always registered. The 16 SEO/analytics tools
 # target content teams rather than end users, and a small default toolset keeps
 # AI tool selection accurate — so they are opt-in via AJ360_ENABLE_SEO_TOOLS.
 SEO_TOOLS_ENABLED = os.environ.get("AJ360_ENABLE_SEO_TOOLS", "").strip().lower() in ("1", "true", "yes")
@@ -751,7 +763,7 @@ def seo_tool(*args, **kwargs):
     return _unregistered
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Trending Content (المحتوى الرائج)", readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(title="Get Trending Content (المحتوى الرائج)", readOnlyHint=True), meta=tool_meta())
 @track_request("get_trending_content")
 async def get_trending_content() -> str:
     """
@@ -773,11 +785,22 @@ async def get_trending_content() -> str:
         
         # Process heroes (featured content)
         for hero in data.get("heroes", []):
-            result["featured"].append({
+            event = ((hero.get("link") or {}).get("event") or {})
+            series_info = (event.get("episodeInformation") or {}).get("seriesInformation") or {}
+            featured = {
                 "title": hero.get("title", ""),
                 "description": hero.get("description", ""),
-                "image": hero.get("imageUrl", ""),
-            })
+                "image": hero.get("imageUrl") or (hero.get("background") or {}).get("imageUrl", ""),
+                "title_image": hero.get("titleImage", ""),
+                "cta_text": hero.get("ctaText") or (hero.get("primaryButton") or {}).get("ctaText", ""),
+            }
+            if event.get("type") == "VOD" and event.get("id"):
+                featured["video_id"] = event["id"]
+                featured["video_title"] = event.get("title", "")
+                featured["watch_url"] = f"{PLATFORM_URL}/video/{event['id']}"
+            if series_info.get("id"):
+                featured["series_id"] = series_info["id"]
+            result["featured"].append(featured)
         
         # Process content buckets
         for bucket in data.get("buckets", []):
@@ -810,7 +833,7 @@ async def get_trending_content() -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Browse Section (تصفح الأقسام)", readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(title="Browse Section (تصفح الأقسام)", readOnlyHint=True), meta=tool_meta())
 @track_request("browse_section")
 async def browse_section(section_id: str) -> str:
     """
@@ -884,7 +907,7 @@ async def browse_section(section_id: str) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Video Details (تفاصيل الفيديو)", readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(title="Get Video Details (تفاصيل الفيديو)", readOnlyHint=True), meta=tool_meta())
 @track_request("get_video_details")
 async def get_video_details(video_id: int) -> str:
     """
@@ -937,7 +960,83 @@ async def get_video_details(video_id: int) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Series Details (تفاصيل البرامج والسلاسل)", readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(title="Play Video (تشغيل الفيديو)", readOnlyHint=True), meta=tool_meta())
+@track_request("play_video")
+async def play_video(video_id: int) -> str:
+    """
+    Play a video from Al Jazeera 360. In AI apps that support interactive views
+    (MCP Apps), this opens the official Al Jazeera 360 player inside the chat;
+    elsewhere it returns the watch link. Use when the user asks to watch or play something.
+
+    تشغيل فيديو من الجزيرة 360. في التطبيقات التي تدعم الواجهات التفاعلية يفتح المشغّل
+    الرسمي داخل المحادثة، وفي غيرها يعيد رابط المشاهدة.
+
+    Args:
+        video_id: The numeric ID of the video (from search_videos, browse_section, etc.)
+    """
+    try:
+        data = await client.get_vod_details(video_id)
+        vid = data.get("id") or video_id
+        watch_url = f"{PLATFORM_URL}/video/{vid}"
+        access = data.get("accessLevel", "UNKNOWN")
+        ep = data.get("episodeInformation") or {}
+        result = {
+            "id": vid,
+            "title": data.get("title", ""),
+            "description": data.get("description", ""),
+            "duration": format_duration(data.get("duration")),
+            "thumbnail": data.get("coverUrl") or data.get("thumbnailUrl", ""),
+            "series_title": (ep.get("seriesInformation") or {}).get("title"),
+            "series_id": (ep.get("seriesInformation") or {}).get("id"),
+            "episode_number": ep.get("episodeNumber"),
+            "access_level": access,
+            "requires_sign_in": access == "GRANTED_ON_SIGN_IN",
+            "watch_url": watch_url,
+            # Playback stays on the official player: streams are DRM-protected
+            # and IP-bound, so the page (not a stream URL) is what gets embedded.
+            "embed_url": watch_url,
+            "player": "Official Al Jazeera 360 player (embedded where the AI app allows it)",
+        }
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Error preparing playback for {video_id}: {e}")
+        return json.dumps({"error": str(e), "watch_url": f"{PLATFORM_URL}/video/{video_id}"}, ensure_ascii=False)
+
+
+@mcp.tool(annotations=ToolAnnotations(title="Playback Diagnostics (فحص التشغيل)", readOnlyHint=True), meta=tool_meta())
+@track_request("run_diagnostics")
+async def run_diagnostics(report: str = "") -> str:
+    """
+    Check whether this AI app can play Al Jazeera 360 videos inside the chat
+    (protected video / DRM, embedding the official player, fullscreen).
+    Use when the user says a video does not play in the chat. Call it with no arguments;
+    the interactive view runs the checks and shows the result.
+
+    فحص قدرة تطبيق الذكاء الاصطناعي على تشغيل فيديوهات الجزيرة 360 داخل المحادثة.
+    استخدمها عندما يقول المستخدم إن الفيديو لا يعمل داخل المحادثة.
+
+    Args:
+        report: Internal. Filled by the interactive view with its capability check; leave empty.
+    """
+    if report:
+        # Capability flags only (no IP, no personal data); the Worker logs the
+        # call to D1, which is how playback problems in real hosts get diagnosed.
+        logger.info("view diagnostics: %s", report[:500])
+        return json.dumps({"received": True}, ensure_ascii=False)
+    return json.dumps({
+        "diagnostics": True,
+        "checks": [
+            "Protected video (Widevine / PlayReady / FairPlay) inside the app's sandbox",
+            "Permission to embed the official aljazeera360.com player",
+            "Fullscreen and autoplay permissions",
+        ],
+        "note": ("The checks run in the interactive view. In AI apps without interactive views, "
+                 "videos open on aljazeera360.com."),
+        "platform_url": PLATFORM_URL,
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool(annotations=ToolAnnotations(title="Get Series Details (تفاصيل البرامج والسلاسل)", readOnlyHint=True), meta=tool_meta())
 @track_request("get_series_details")
 async def get_series_details(series_id: int) -> str:
     """
@@ -981,7 +1080,7 @@ async def get_series_details(series_id: int) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Season Episodes (حلقات الموسم)", readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(title="Get Season Episodes (حلقات الموسم)", readOnlyHint=True), meta=tool_meta())
 @track_request("get_season_episodes")
 async def get_season_episodes(season_id: int, max_episodes: int = 20) -> str:
     """
@@ -1008,6 +1107,7 @@ async def get_season_episodes(season_id: int, max_episodes: int = 20) -> str:
                 "duration_seconds": ep.get("duration"),
                 "episode_number": ep.get("episodeInformation", {}).get("episodeNumber") if ep.get("episodeInformation") else None,
                 "thumbnail": ep.get("thumbnailUrl", ""),
+                "published_date": ep.get("publishedDate", ""),
                 "watch_url": f"{PLATFORM_URL}/video/{ep.get('id')}",
                 "access_level": ep.get("accessLevel", "UNKNOWN"),
             })
@@ -1032,7 +1132,7 @@ async def get_season_episodes(season_id: int, max_episodes: int = 20) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Search Videos (البحث عن الفيديوهات)", readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(title="Search Videos (البحث عن الفيديوهات)", readOnlyHint=True), meta=tool_meta())
 @track_request("search_videos")
 async def search_videos(query: str, content_type: Optional[str] = None, max_results: int = 20) -> str:
     """
@@ -1057,9 +1157,16 @@ async def search_videos(query: str, content_type: Optional[str] = None, max_resu
     # Bound scan parameters — unbounded values fan out into real API calls.
     max_results = _bound(max_results, 1, 50, 20)
     try:
-        data = await client.search_content(query, page_size=max_results)
-        # Pass query for client-side relevance re-ranking
-        results = format_search_results(data, query=query, max_results=max_results)
+        # The platform search intermittently answers an identical query with
+        # its empty "no results" layout (about half of calls in testing), so
+        # retry a couple of times before concluding there are no matches.
+        results = []
+        for _attempt in range(3):
+            data = await client.search_content(query, page_size=max_results)
+            # Pass query for client-side relevance re-ranking
+            results = format_search_results(data, query=query, max_results=max_results)
+            if results:
+                break
         
         # Apply content_type filter if specified
         if content_type:
@@ -1171,7 +1278,7 @@ async def list_sections() -> str:
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Latest Episodes (أحدث الحلقات)", readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(title="Get Latest Episodes (أحدث الحلقات)", readOnlyHint=True), meta=tool_meta())
 @track_request("get_latest_episodes")
 async def get_latest_episodes(section_id: str = "AJA", count: int = 10) -> str:
     """
@@ -3416,6 +3523,10 @@ async def generate_series_schema(series_id: int) -> str:
 # MCP Resources
 # ============================================================================
 
+# Interactive view (MCP Apps) — see mcp_apps.py
+register_ui(mcp)
+
+
 @mcp.resource("aljazeera360://sections")
 async def sections_resource() -> str:
     """List of all available sections on Al Jazeera 360."""
@@ -3511,27 +3622,43 @@ PRIVACY_HTML = """<!DOCTYPE html>
 </head>
 <body>
     <h1>Privacy Policy</h1>
-    <p>Last updated: June 8, 2026</p>
-    
-    <p>This Privacy Policy describes how the <strong>Al Jazeera 360 MCP Server</strong> handles data. Our server is an open-source tool designed to connect AI assistants to the public catalog of Al Jazeera 360.</p>
-    
-    <h2>1. Data Collection and Processing</h2>
-    <p>The Al Jazeera 360 MCP Server does not collect, store, or share any personal data or personally identifiable information (PII). All operations are performed programmatically to fetch public streaming metadata directly from Al Jazeera 360's public API endpoints.</p>
-    
-    <h2>2. Authentication and Security</h2>
-    <p>Any API keys or tokens (such as <code>AJ360_REFRESH_TOKEN</code>) provided to this server are used strictly to authenticate requests with the official Al Jazeera 360 backend on behalf of the user. These tokens are stored securely in your environment variables and are never transmitted to any third party other than Al Jazeera 360.</p>
-    
-    <h2>3. Client-Side Analytics & Data Retention</h2>
-    <p>The server includes a local, self-hosted analytics dashboard to monitor request rates and latency. This analytical data is stored entirely in memory within the running container and is completely cleared/deleted when the container restarts. No data is persisted long-term, and no analytics data is ever transmitted to external tracking services or third parties.</p>
-    
-    <h2>4. Contact Information</h2>
-    <p>If you have any questions or concerns about this Privacy Policy or how data is handled by this server, please contact us via email at: <a href="mailto:support@aljazeera360.com">support@aljazeera360.com</a> or open an issue in our public GitHub repository.</p>
+    <p>Last updated: September 25, 2026</p>
 
-    <h2>5. Changes to This Policy</h2>
-    <p>Since this is an open-source project, any future changes to this policy will be documented in our public GitHub repository. You are encouraged to review this policy periodically.</p>
-    
+    <p>This Privacy Policy describes how the <strong>Al Jazeera 360 MCP Server</strong> handles data. The server connects AI assistants (such as Claude) to the public catalog of Al Jazeera 360. It is open source; the code that does everything described here is public on GitHub.</p>
+
+    <h2>1. What the server does with your requests</h2>
+    <p>When an AI assistant calls a tool, the server fetches public catalog information (titles, descriptions, episodes, images, watch links) from Al Jazeera 360's platform and returns it. The server does not ask for, receive or store your name, email, account, IP address, or the content of your conversation with the AI assistant. It does not read the assistant's memory, chat history or files.</p>
+
+    <h2>2. Usage analytics we keep</h2>
+    <p>To understand how the service is used and to fix problems, each request is logged with only these fields:</p>
+    <ul>
+        <li>Time of the request</li>
+        <li>Which tool was called, and its main argument (for example a search term such as "الدحيح", or a video or series number)</li>
+        <li>The name and version of the AI application, as it reports itself (for example "Anthropic/ClaudeAI 1.0.0")</li>
+        <li>The country of the connecting server, as provided by our hosting provider (for assistants like Claude this is the assistant's data centre, not your location)</li>
+        <li>The connecting software's user-agent string</li>
+        <li>A random session number that groups the requests of one conversation; it is not linked to you</li>
+        <li>For the interactive video view only: technical playback capabilities of the app (for example whether protected video or embedding is allowed)</li>
+    </ul>
+    <p><strong>IP addresses are not stored.</strong> To protect the service, the number of requests per conversation (or, without one, per network range) is counted for a minute in Cloudflare's rate limiter, then discarded. Please do not type personal information into search requests, since search terms are logged as written.</p>
+
+    <h2>3. Where it is stored and for how long</h2>
+    <p>Analytics are stored in a Cloudflare D1 database operated by the maintainers. Records older than 180 days are deleted automatically every day. The data is used only to measure usage and improve the service, and is never sold or shared with third parties or advertising services. Only aggregate figures (for example "most searched programmes") may be shared publicly or with Al Jazeera 360 teams.</p>
+
+    <h2>4. Service providers</h2>
+    <p>The server runs on Cloudflare (hosting and the analytics database) and requests catalog data from Al Jazeera 360's platform provider. Watching a video opens the official Al Jazeera 360 website or player, which has <a href="https://www.aljazeera360.com">its own privacy policy</a>.</p>
+
+    <h2>5. Credentials</h2>
+    <p>The hosted service uses a platform key held as a server secret. Users never provide credentials to it. If you self-host the open-source server with your own tokens, they stay in your environment variables and are sent only to Al Jazeera 360's platform.</p>
+
+    <h2>6. Contact</h2>
+    <p>For questions, or to ask for data to be deleted, open an issue in the public <a href="https://github.com/ahmedaminsa/aljazeera360-mcp-server/issues">GitHub repository</a>.</p>
+
+    <h2>7. Changes to this policy</h2>
+    <p>Changes are published on this page and in the GitHub repository, with the date above updated.</p>
+
     <footer>
-        <p>&copy; 2026 Al Jazeera 360 MCP Server Contributors. This tool is independent and not officially affiliated with Al Jazeera Network.</p>
+        <p>&copy; 2026 Al Jazeera 360 MCP Server Contributors. Unofficial community project, not affiliated with, endorsed by, or sponsored by Al Jazeera Media Network.</p>
     </footer>
 </body>
 </html>
@@ -3561,7 +3688,7 @@ DOCS_HTML = """<!DOCTYPE html>
     <p>To connect your AI assistant to this server, use the following configuration based on your transport mode:</p>
     
     <h3>1. Streamable HTTP Transport (Recommended)</h3>
-    <p>Expose the server as a web service. This is ideal for cloud deployments (Railway, Render, etc.):</p>
+    <p>Expose the server as a web service. This is ideal for cloud deployments (Cloudflare Containers, Render, etc.):</p>
     <pre>URL: https://your-deployed-mcp-server.com/mcp</pre>
     
     <h3>2. STDIO Transport (Local)</h3>
@@ -3703,7 +3830,7 @@ async def api_health(request: Request):
     return JSONResponse({
         "status": "ok",
         "server": "aljazeera360-mcp",
-        "version": "2.0.1",
+        "version": "2.1.1",
         "transport": _transport_mode,
         "privacy_policy": "/privacy",
         "documentation": "/docs",

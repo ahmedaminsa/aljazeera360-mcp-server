@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY server.py .
 COPY analytics.py .
+COPY mcp_apps.py .
 
 # Expose ports: MCP server + Analytics dashboard
 EXPOSE 8080 9090

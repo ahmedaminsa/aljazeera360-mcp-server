@@ -54,8 +54,10 @@ The server ships with two tool profiles:
 
 | Profile | Tools | For whom | How |
 | :--- | :--- | :--- | :--- |
-| **Core** (default) | 8 discovery tools | End users asking AI assistants about content | Works out of the box |
-| **Full** | All 24 tools (+ SEO & analytics) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
+| **Core** (default) | 10 discovery tools | End users asking AI assistants about content | Works out of the box |
+| **Full** | All 26 tools (+ SEO & analytics) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
+
+On the hosted service, the public URL (`/mcp`) serves the **core** profile. The **full** profile is on a private team URL (`/team/<token>/mcp`) so the heavy analysis tools aren't open to the public or to directory crawlers. For Claude Code in this repo, set `AJ360_MCP_URL` to the team URL to get the SEO tools; without it, `.mcp.json` uses the public URL.
 
 A small default toolset keeps AI tool selection fast and accurate. Enable the full profile only if you need the SEO/analytics tools.
 
@@ -71,6 +73,49 @@ A small default toolset keeps AI tool selection fast and accurate. Enable the fu
 | `get_season_episodes` | Lists all episodes within a specific season |
 | `search_videos` | Full-text search across all content (Arabic & English), with optional content type filter |
 | `get_latest_episodes` | Returns the most recently published episodes from any section |
+| `play_video` | Opens the official Al Jazeera 360 player inside the chat (in AI apps that support interactive views); elsewhere returns the watch link |
+| `run_diagnostics` | Checks what the AI app allows inside the chat (protected video, embedding the official player, fullscreen) and shows the result in the view |
+
+### Interactive view (MCP Apps)
+
+In AI apps that support the [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps) extension (Claude, ChatGPT and others), the discovery tools render an interactive Arabic view inside the chat instead of plain text:
+
+| View | Opened by | What the user can do |
+| :--- | :--- | :--- |
+| **Catalog** | `search_videos`, `browse_section`, `get_trending_content`, `get_latest_episodes` | Thumbnail cards in rows, section chips, an in-view search box |
+| **Series** | `get_series_details`, `get_season_episodes` | Poster and description, season tabs, the episode list |
+| **Video** | `get_video_details` | Details card with *Watch here*, *Open on Al Jazeera 360*, *All episodes*, *Ask about it* |
+| **Player** | `play_video` | The official aljazeera360.com player embedded in the chat |
+
+The view uses the aljazeera360.com design system, read from the live site: the AlJazeera typeface (Regular and Bold), the black background with the platform's `#00B7D4` primary colour, the official logo, calligraphy title art on home banners, poster rows, 16:9 episode cards, season tabs and duration/date chips. It is right-to-left, and it stays in the site's dark look whatever the host's theme.
+
+Every click calls the server's own tools, and the view tells the model what the user is looking at, so follow-up questions have context.
+
+**About playback.** The platform's streams are DRM-protected (Widevine / PlayReady), stream tokens are bound to the requesting IP address, and the platform API only accepts browser requests from aljazeera360.com. So the player embeds the official page rather than a raw stream. Playback, sign-in, ads and analytics all stay on Al Jazeera 360's own player. Whether an AI app allows protected video inside its sandbox differs by app. When it doesn't, the view shows the cover image and a *Watch on Al Jazeera 360* button instead of a broken player.
+
+Clients without MCP Apps support ignore the view and get the same JSON as before. Set `AJ360_ENABLE_UI=0` to switch the view off entirely.
+
+### Features at a glance
+
+**For viewers**
+- Browse the home page inside the chat: hero banners, *Now showing*, *Latest episodes*, *Most watched* and the other editorial rows.
+- Search in Arabic or English from the view, or by asking the AI.
+- Open any programme to see all seasons and episodes, with duration and publish date.
+- Watch on the official player inside the chat, or in one click on aljazeera360.com.
+- Ask the AI about what's on screen: it knows which programme or episode is open.
+
+**For Al Jazeera 360**
+- Every play, sign-in, ad and view is counted by the official player and site analytics, because playback never leaves them.
+- Brand-consistent: same fonts, colours, logo and layout as the site and apps.
+- A new discovery channel: users of Claude, ChatGPT and other AI apps reach the catalogue without leaving the conversation.
+- Editorial choices carry over: the home banners and rows are the ones the team curates in Vesper.
+- Usage is measurable: the Worker logs which tools, searches and titles AI users open (see *Usage analytics*).
+
+**Technical**
+- Open standard (MCP Apps) and one codebase for every compatible AI app. No app-store submission per platform.
+- Safe by design: the view runs in the host's sandbox, may load only the platform's image and font hosts, and embeds only aljazeera360.com.
+- Backwards compatible: AI apps without UI support get the same JSON as before, and `AJ360_ENABLE_UI=0` turns the view off.
+- No build step: the view is one self-contained HTML file inside `mcp_apps.py`.
 
 ### SEO & Metadata Tools (requires `AJ360_ENABLE_SEO_TOOLS=1`)
 
@@ -219,6 +264,8 @@ This server speaks the standard MCP protocol over `stdio` (local) and Streamable
 | `MCP_PORT` | No | `8080` | Port for the HTTP transport (cloud deployment). |
 | `AJ360_ALLOWED_HOST` | Cloud only | — | Public hostname of your deployment (no scheme). Required when self-hosting on a custom domain — the DNS-rebinding protection rejects unknown hosts with 421. |
 | `AJ360_ENABLE_SEO_TOOLS` | No | off | Set to `1` to register the 16 SEO/analytics tools (full profile). |
+| `AJ360_ENABLE_UI` | No | on | Set to `0` to turn off the interactive MCP Apps view (tools then return plain JSON only). |
+| `AJ360_STATELESS` | No | on | HTTP transport runs stateless, so container sleeps and redeploys never leave clients on a dead session. Set to `0` for classic session mode. |
 | `AJ360_ENABLE_DASHBOARD` | No | `true` | Enable/disable the analytics dashboard. |
 | `AJ360_DASHBOARD_PORT` | No | `9090` | Port for the analytics dashboard. |
 | `AJ360_DASHBOARD_TOKEN` | No | — | Shared secret for the analytics data endpoints (`/api/stats`, `/api/recent`). When set, callers must send `Authorization: Bearer <token>` or `?token=<token>`. **Strongly recommended for any public/cloud deployment.** |
@@ -336,9 +383,17 @@ Calling `search_videos("غزة")` returns:
 
 ---
 
-## Analytics Dashboard
+## Analytics
 
-The server includes a **built-in analytics dashboard** that tracks every request made by AI tools.
+There are **two layers**, and the difference matters:
+
+| Layer | Endpoint | Persistence |
+| :--- | :--- | :--- |
+| **In-container dashboard** (this server) | `/api/stats`, `/api/recent`, `/` | ⚠️ **Current process only.** On serverless hosts that sleep idle containers (Cloudflare Containers, Cloud Run scale-to-zero), the SQLite file lives on ephemeral disk and resets — expect zeros after any restart. |
+| **Edge analytics** (Cloudflare deploy) | `/api/usage` | ✅ **Persistent.** The Worker logs every MCP request to a Cloudflare D1 database. See [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md). |
+
+If you self-host on a always-on VM, the in-container dashboard is enough. On
+serverless, use the edge layer for anything you want to keep.
 
 ### What It Tracks
 
@@ -370,6 +425,7 @@ For cloud deployments, expose port 9090 alongside the MCP port (8080).
 | `GET /api/health` | Health check with version, transport, and links to `/privacy` and `/docs` |
 | `GET /privacy` | Privacy Policy page |
 | `GET /docs` | Server documentation page |
+| `GET /api/usage` | **Cloudflare deploys only** — persistent usage report from D1: clients, tools, top content queries, countries, daily trend, recent sessions |
 
 ### Configuration
 
