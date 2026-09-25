@@ -57,6 +57,8 @@ The server ships with two tool profiles:
 | **Core** (default) | 10 discovery tools | End users asking AI assistants about content | Works out of the box |
 | **Full** | All 26 tools (+ SEO & analytics) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
 
+On the hosted service, the public URL (`/mcp`) serves the **core** profile. The **full** profile is on a private team URL (`/team/<token>/mcp`) so the heavy analysis tools aren't open to the public or to directory crawlers. For Claude Code in this repo, set `AJ360_MCP_URL` to the team URL to get the SEO tools; without it, `.mcp.json` uses the public URL.
+
 A small default toolset keeps AI tool selection fast and accurate. Enable the full profile only if you need the SEO/analytics tools.
 
 ### Core Discovery Tools (always on)

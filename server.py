@@ -3640,7 +3640,7 @@ PRIVACY_HTML = """<!DOCTYPE html>
         <li>A random session number that groups the requests of one conversation; it is not linked to you</li>
         <li>For the interactive video view only: technical playback capabilities of the app (for example whether protected video or embedding is allowed)</li>
     </ul>
-    <p><strong>IP addresses are not stored.</strong> Please do not type personal information into search requests, since search terms are logged as written.</p>
+    <p><strong>IP addresses are not stored.</strong> To protect the service, the number of requests per conversation (or, without one, per network range) is counted for a minute in Cloudflare's rate limiter, then discarded. Please do not type personal information into search requests, since search terms are logged as written.</p>
 
     <h2>3. Where it is stored and for how long</h2>
     <p>Analytics are stored in a Cloudflare D1 database operated by the maintainers. Records older than 180 days are deleted automatically every day. The data is used only to measure usage and improve the service, and is never sold or shared with third parties or advertising services. Only aggregate figures (for example "most searched programmes") may be shared publicly or with Al Jazeera 360 teams.</p>

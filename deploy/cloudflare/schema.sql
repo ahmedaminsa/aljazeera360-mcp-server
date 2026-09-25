@@ -15,9 +15,12 @@ CREATE TABLE IF NOT EXISTS events (
   client_name    TEXT,            -- from initialize params.clientInfo.name
   client_version TEXT,
   country        TEXT,            -- request.cf.country (coarse, no IP)
-  ua             TEXT             -- truncated user-agent
+  ua             TEXT,            -- truncated user-agent
+  kind           TEXT             -- human | team | automated (see classify() in src/index.js)
 );
+-- Existing databases: ALTER TABLE events ADD COLUMN kind TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_events_ts      ON events (ts);
 CREATE INDEX IF NOT EXISTS idx_events_session ON events (session_id);
 CREATE INDEX IF NOT EXISTS idx_events_tool    ON events (tool);
+CREATE INDEX IF NOT EXISTS idx_events_kind    ON events (kind, ts);

@@ -15,6 +15,14 @@
       // One instance keeps MCP streamable-http sessions on the same backend
       "max_instances": 1,
       "instance_type": "basic"
+    },
+    {
+      // Private team endpoint (/team/<token>/mcp) with the SEO/analytics tools.
+      // Sleeps when unused, so it costs nothing between team sessions.
+      "class_name": "AJ360TeamContainer",
+      "image": "../../Dockerfile",
+      "max_instances": 1,
+      "instance_type": "basic"
     }
   ],
   "durable_objects": {
@@ -22,6 +30,10 @@
       {
         "name": "AJ360_CONTAINER",
         "class_name": "AJ360Container"
+      },
+      {
+        "name": "AJ360_TEAM_CONTAINER",
+        "class_name": "AJ360TeamContainer"
       }
     ]
   },
@@ -29,7 +41,17 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["AJ360Container"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["AJ360TeamContainer"]
     }
+  ],
+  // Per-client request limits on /mcp (key = IP + mcp-session-id; the IP is
+  // never stored). A real chat session makes a handful of calls a minute.
+  "ratelimits": [
+    { "name": "MCP_LIMITER",  "namespace_id": "3601", "simple": { "limit": 60,  "period": 60 } },
+    { "name": "TEAM_LIMITER", "namespace_id": "3602", "simple": { "limit": 300, "period": 60 } }
   ],
   // Persistent usage analytics — survives container sleeps, unlike the
   // in-container SQLite dashboard. Schema in schema.sql.
@@ -46,9 +68,9 @@
     // MUST match the public hostname of this Worker, or the server's
     // DNS-rebinding protection rejects requests with 421.
     // If you use a custom domain later, change this and deploy again.
-    "AJ360_ALLOWED_HOST": "aljazeera360-mcp.ahmed-26d.workers.dev",
-    // Full 24-tool profile (SEO + analytics tools) — the
-    // deployment profile the claude.ai connector was built around.
-    "AJ360_ENABLE_SEO_TOOLS": "1"
+    "AJ360_ALLOWED_HOST": "aljazeera360-mcp.ahmed-26d.workers.dev"
+    // The public /mcp endpoint serves the 10 core tools; the SEO/analytics
+    // tools live on the private team endpoint (AJ360TeamContainer). Set the
+    // secret with: wrangler secret put AJ360_TEAM_TOKEN
   }
 }
