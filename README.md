@@ -55,7 +55,7 @@ The server ships with two tool profiles:
 | Profile | Tools | For whom | How |
 | :--- | :--- | :--- | :--- |
 | **Core** (default) | 14 tools (discovery + video watching, transcripts & search) | End users asking AI assistants about content | Works out of the box |
-| **Full** | All 36 tools (+ SEO, analytics, listening, ad breaks, social pack & clips) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
+| **Full** | All 41 tools (+ SEO, analytics, listening, ad breaks, social pack, clips, translation, chapters & guests) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
 
 On the hosted service, the public URL (`/mcp`) serves the **core** profile. The **full** profile is on a private team URL (`/team/<token>/mcp`) so the heavy analysis tools aren't open to the public or to directory crawlers. For Claude Code in this repo, set `AJ360_MCP_URL` to the team URL to get the SEO tools; without it, `.mcp.json` uses the public URL.
 
@@ -151,13 +151,23 @@ Once an episode is transcribed, the team endpoint turns it into ready work for t
 | `get_social_pack` | One call for the social team: quotable lines with in/out times, 30–60 s clip-ready moments, hashtag candidates, key frames, the saved analysis and the transcript, plus the list of deliverables (posts per platform, thread, quote cards, 5 headlines, English summary). |
 | `make_clip` | Cuts up to 3 minutes of an episode into an MP4 with sound (360p–1080p) and returns a download link that lasts 7 days. The cut starts at the keyframe at or before the requested time. DRM-protected episodes are refused. |
 
+| `translate_transcript` | Translates the saved Arabic transcript into English (or French, Spanish, Turkish) subtitles with the same timing. Saved, searchable, and exported as SRT/VTT, plus the ready `subtitle.en-GB` column for the DVE batch CSV. |
+| `generate_chapters` | Splits the episode into chapters where the subject changes, each with a short Arabic title and a frame. Returned as **Vesper annotations** (timeline marks with titles; CSV columns `annotations.<ms>` = `image|title`), a YouTube chapter list, and saved to the index. |
+| `find_guests` | The guest database: everyone who appeared in or was named in an indexed episode, with role, episodes and first appearance. Search by name (Arabic or English) or role, or list the whole directory. Spelling variants of the same person are merged. |
+| `review_names` | Proper names speech recognition probably misheard, with the suggested spelling, count, time and line; *high* = recognition error, *low* = near spelling variant. |
+| `fix_transcript_names` | Applies the approved corrections to the saved transcript everywhere (text and word timings). |
+
+Chapters, guests and name review run on **Llama 3.3 70B** (Workers AI), chosen over Gemma 3, Mistral Small 3.1 and gpt-oss after a side-by-side test on an Arabic episode. New episodes get chapters, guests, name review and English subtitles during automatic indexing.
+
 **Exact seconds.** Whisper returns a time for every word. They are saved with the transcript, so `search_video_index` gives the exact second a word or phrase is spoken (`exact_sec`).
 
 **Automatic indexing.** Every hour the Worker asks the team container to transcribe the newest episodes of the main channels (2 per run) and compute their ad breaks, so the index stays current without anyone asking. DRM-protected episodes are marked and skipped.
 
-**Studio page and exports.** `/team/<token>/studio` lists the indexed episodes with their transcript and suggested ad breaks (sensitive ones in red). Each transcript downloads as text, SRT or VTT from `/team/<token>/studio/<video_id>.txt|.srt|.vtt`, and the ad breaks from `<video_id>-ads.csv`. On the team endpoint, `listen_to_video`, `get_transcript`, `get_video_analysis`, `suggest_ad_breaks` and `get_social_pack` return these links, so the full text reaches the team as a file instead of being pasted into the chat.
+**Studio page and exports.** `/team/<token>/studio` lists the indexed episodes with their transcript (and English translation), chapters and suggested ad breaks (sensitive ones in red); `/team/<token>/studio/guests` is the guest database. Chapters export as a YouTube list (`<video_id>-chapters.txt`) and as one DVE batch-update CSV row with the annotations and subtitle tracks (`<video_id>-dve.csv`); translations as `<video_id>.en.srt|.vtt|.txt`. Each transcript downloads as text, SRT or VTT from `/team/<token>/studio/<video_id>.txt|.srt|.vtt`, and the ad breaks from `<video_id>-ads.csv`. On the team endpoint, `listen_to_video`, `get_transcript`, `get_video_analysis`, `suggest_ad_breaks` and `get_social_pack` return these links, so the full text reaches the team as a file instead of being pasted into the chat.
 
 Prompts on the team endpoint: `social_media_pack` and `contextual_ads`.
+
+**Vesper note.** Vesper has no separate chapters feature; annotations are its equivalent in the player. Subtitles accept VTT/SRT/SCC in several languages (DVE → subtitles, or the batch CSV `subtitle.<lang>` columns).
 
 **Limits.** Categories and brand safety come from keyword lists, a first pass for a person or the assistant to confirm. Ad markers are entered in Vesper by the team; the connector does not write to Vesper.
 
