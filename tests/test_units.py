@@ -57,9 +57,9 @@ def test_seo_tool_returns_function_unchanged_when_disabled():
     assert callable(server.audit_metadata_quality)
 
 
-def test_default_profile_registers_13_tools():
+def test_default_profile_registers_14_tools():
     tools = server.mcp._tool_manager._tools
-    assert len(tools) == 13 or os.environ.get("AJ360_ENABLE_SEO_TOOLS")
+    assert len(tools) == 14 or os.environ.get("AJ360_ENABLE_SEO_TOOLS")
 
 
 def test_dashboard_auth_denies_wrong_token():
@@ -284,7 +284,7 @@ def test_audio_is_decoded_into_timed_chunks(tmp_path):
 
 def test_read_only_video_tools_are_public_and_writers_are_team_only():
     public = set(server.mcp._tool_manager._tools)
-    assert {"watch_video", "search_video_index", "get_video_analysis"} <= public
+    assert {"watch_video", "search_video_index", "get_video_analysis", "get_transcript"} <= public
     writers = {"save_video_analysis", "transcribe_audio", "listen_to_video"}
     assert not (writers & public) or os.environ.get("AJ360_ENABLE_SEO_TOOLS")
 
@@ -323,3 +323,46 @@ def test_hls_audio_rendition_and_byte_ranges():
 def test_encrypted_audio_is_detected():
     pl = video_intel.parse_media_playlist('#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI="skd://k"\n#EXTINF:6,\na.ts\n')
     assert pl["encrypted"]
+
+
+VTT = """WEBVTT
+
+00:08.220 --> 00:11.521 align:center
+أكثرية الإسرائيليين
+<i>كانوا يدعمون</i> اجتياح غزة
+
+1:02:03.000 --> 1:02:05.500
+الجملة الأخيرة
+"""
+
+SRT = """1
+00:00:01,000 --> 00:00:02,500
+مرحبا
+
+2
+00:00:03,000 --> 00:00:04,000
+{\\an8}بكم
+"""
+
+
+def test_subtitles_are_parsed_from_vtt_and_srt():
+    cues = video_intel.parse_subtitles(VTT)
+    assert cues[0] == {"start": 8.22, "end": 11.521, "text": "أكثرية الإسرائيليين كانوا يدعمون اجتياح غزة"}
+    assert cues[1]["start"] == 3723.0
+    assert [c["text"] for c in video_intel.parse_subtitles(SRT)] == ["مرحبا", "بكم"]
+
+
+def test_subtitle_track_prefers_language_then_readable_format():
+    tracks = [{"format": "scc", "language": "ar", "url": "a.scc"},
+              {"format": "srt", "language": "ar", "url": "a.srt"},
+              {"format": "vtt", "language": "en", "url": "e.vtt"},
+              {"format": "vtt", "language": "ar", "url": "a.vtt"}]
+    assert video_intel.pick_subtitle(tracks, "ar")["url"] == "a.vtt"
+    assert video_intel.pick_subtitle(tracks, "fr")["url"] in ("e.vtt", "a.vtt")
+    assert video_intel.pick_subtitle([{"format": "scc", "language": "ar", "url": "x"}], "ar") is None
+
+
+def test_transcript_renders_srt():
+    cues = [{"start": 1.0, "end": 2.5, "text": "مرحبا"}]
+    assert server._render_cues(cues, "srt") == "1\n00:00:01,000 --> 00:00:02,500\nمرحبا"
+    assert server._render_cues(cues, "text") == "[00:01] مرحبا"

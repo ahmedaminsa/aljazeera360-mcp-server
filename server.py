@@ -3831,6 +3831,107 @@ async def get_video_analysis(video_id: Optional[int] = None) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
+TRANSCRIPT_FORMATS = ("text", "plain", "srt", "vtt")
+TRANSCRIPT_MAX_CHARS = 60000
+
+
+def _srt_ts(seconds: float) -> str:
+    ms = int(round(seconds * 1000))
+    return f"{ms // 3600000:02d}:{ms % 3600000 // 60000:02d}:{ms % 60000 // 1000:02d},{ms % 1000:03d}"
+
+
+def _render_cues(cues: list[dict], fmt: str) -> str:
+    if fmt == "plain":
+        return "\n".join(c["text"] for c in cues)
+    if fmt == "srt":
+        return "\n\n".join(f"{i}\n{_srt_ts(c['start'])} --> {_srt_ts(c['end'])}\n{c['text']}"
+                           for i, c in enumerate(cues, 1))
+    if fmt == "vtt":
+        return "WEBVTT\n\n" + "\n\n".join(
+            f"{_srt_ts(c['start']).replace(',', '.')} --> {_srt_ts(c['end']).replace(',', '.')}\n{c['text']}"
+            for c in cues)
+    return "\n".join(f"[{video_intel.fmt_ts(c['start'])}] {c['text']}" for c in cues)
+
+
+@mcp.tool(annotations=ToolAnnotations(title="Get Transcript (نص الحلقة والترجمة)", readOnlyHint=True))
+@track_request("get_transcript")
+async def get_transcript(video_id: int, language: str = "ar", format: str = "text",
+                         start_minute: float = 0, end_minute: Optional[float] = None) -> str:
+    """
+    Get the full text of an episode: the platform's own subtitle file (WebVTT/SRT) when the
+    episode has one, otherwise a transcript already saved in the video index. Returns the
+    text with timestamps, plain text, or a ready SRT/VTT file. If neither exists, says so and
+    lists the subtitle languages that are available.
+
+    نص الحلقة الكامل: ملف الترجمة الخاص بالمنصة إن وجد، أو التفريغ المحفوظ في الفهرس.
+
+    Args:
+        video_id: Video ID
+        language: Subtitle language code (default "ar"; falls back to another language if absent)
+        format: text (timestamped lines) | plain | srt | vtt
+        start_minute: Start of the range, in minutes (default 0)
+        end_minute: End of the range (default: end of the episode)
+    """
+    fmt = format if format in TRANSCRIPT_FORMATS else "text"
+    try:
+        meta = await _video_meta(video_id)
+        head = {"video_id": meta["id"], "title": meta["title"], "series": meta["series"],
+                "duration": format_duration(meta.get("duration")), "watch_url": meta["watch_url"]}
+        cues, source, tracks = [], None, []
+        try:
+            stream = await client.get_playback(meta["id"])
+            tracks = ((stream.get("hls") or [{}])[0].get("subtitles")
+                      or (stream.get("dash") or [{}])[0].get("subtitles") or [])
+        except Exception as e:
+            logger.info(f"get_transcript {video_id}: no playback ({e})")
+        track = video_intel.pick_subtitle(tracks, language)
+        if track:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as http:
+                resp = await http.get(track["url"])
+                resp.raise_for_status()
+            cues = video_intel.parse_subtitles(resp.content.decode("utf-8-sig", errors="replace"))
+            source = f"platform subtitles ({track.get('language')}, {track.get('format')})"
+        if not cues:
+            saved = await video_intel.index.get(meta["id"])
+            ms = [m for m in saved.get("moments", []) if m.get("kind") == "transcript"]
+            ms.sort(key=lambda m: m["t_sec"])
+            cues = [{"start": float(m["t_sec"]),
+                     "end": float(ms[i + 1]["t_sec"]) if i + 1 < len(ms) else float(m["t_sec"]) + 5,
+                     "text": m["text"]} for i, m in enumerate(ms)]
+            if cues:
+                data = (saved.get("analysis") or {}).get("data")
+                data = json.loads(data) if isinstance(data, str) else (data or {})
+                source = f"saved transcript ({data.get('transcript_source') or 'Whisper'})"
+        languages = sorted({f"{t.get('language')}:{t.get('format')}" for t in tracks})
+        if not cues:
+            return json.dumps({**head, "available": False, "subtitle_tracks": languages,
+                               "note": "This episode has no subtitle file on the platform and no saved transcript. "
+                                       "The team endpoint can create one with listen_to_video; "
+                                       "watch_video reads on-screen text."}, ensure_ascii=False, indent=2)
+
+        start = max(0.0, float(start_minute or 0)) * 60
+        end = float(end_minute) * 60 if end_minute is not None else None
+        picked = [c for c in cues if c["end"] > start and (end is None or c["start"] < end)]
+        shown, size = 0, 0
+        for c in picked:  # keep the reply readable; the rest comes with "next"
+            size += len(c["text"]) + 40
+            if shown and size > TRANSCRIPT_MAX_CHARS:
+                break
+            shown += 1
+        body = _render_cues(picked[:shown], fmt)
+        out ={**head, "available": True, "source": source, "subtitle_tracks": languages, "format": fmt,
+               "range": f"{video_intel.fmt_ts(start)} – {video_intel.fmt_ts(end) if end is not None else 'end'}",
+               "cues": shown, "total_cues": len(cues),
+               "covers": (f"{video_intel.fmt_ts(cues[0]['start'])} – {video_intel.fmt_ts(cues[-1]['end'])}"),
+               "transcript": body}
+        if shown < len(picked):
+            out["next"] = f"Continue with start_minute={picked[shown]['start'] / 60:.2f}"
+        return json.dumps(out, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"get_transcript {video_id}: {e}")
+        return json.dumps({"error": str(e), "video_id": video_id}, ensure_ascii=False)
+
+
 # ============================================================================
 # MCP Resources
 # ============================================================================
@@ -4145,7 +4246,7 @@ async def api_health(request: Request):
     return JSONResponse({
         "status": "ok",
         "server": "aljazeera360-mcp",
-        "version": "2.3.0",
+        "version": "2.4.0",
         "transport": _transport_mode,
         "privacy_policy": "/privacy",
         "documentation": "/docs",

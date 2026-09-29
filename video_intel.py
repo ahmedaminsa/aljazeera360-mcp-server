@@ -411,6 +411,46 @@ def moments_from_analysis(a: dict) -> list[dict]:
     return [dict(r, norm=normalize(r["text"])) for r in rows if r["text"]]
 
 
+# ----------------------------------------------------------------------------
+# READ the platform's own subtitle files (WebVTT / SRT)
+# ----------------------------------------------------------------------------
+_CUE_TIME = re.compile(r"((?:\d+:)?\d{1,2}:\d{2}[.,]\d{1,3})\s*-->\s*((?:\d+:)?\d{1,2}:\d{2}[.,]\d{1,3})")
+_CUE_TAGS = re.compile(r"<[^>]+>|\{\\[^}]*\}")
+
+
+def _cue_seconds(value: str) -> float:
+    total = 0.0
+    for part in value.replace(",", ".").split(":"):
+        total = total * 60 + float(part)
+    return total
+
+
+def parse_subtitles(text: str) -> list[dict]:
+    """WebVTT or SRT → [{'start', 'end', 'text'}] (seconds; tags and cue settings dropped)."""
+    cues = []
+    for block in re.split(r"\r?\n\s*\r?\n", (text or "").lstrip("﻿")):
+        lines = [l.strip() for l in block.strip().splitlines()]
+        idx = next((i for i, l in enumerate(lines) if _CUE_TIME.search(l)), None)
+        if idx is None:
+            continue
+        m = _CUE_TIME.search(lines[idx])
+        body = " ".join(_CUE_TAGS.sub("", l) for l in lines[idx + 1:] if l)
+        body = re.sub(r"\s+", " ", body).strip()
+        if body:
+            cues.append({"start": _cue_seconds(m.group(1)), "end": _cue_seconds(m.group(2)), "text": body})
+    return cues
+
+
+def pick_subtitle(tracks: list[dict], language: str) -> Optional[dict]:
+    """The track in the requested language (else the first), preferring formats we can read."""
+    readable = [t for t in tracks or [] if str(t.get("format", "")).lower() in ("vtt", "srt") and t.get("url")]
+    if not readable:
+        return None
+    rank = {"vtt": 0, "srt": 1}
+    same = [t for t in readable if str(t.get("language", "")).lower().startswith(language.lower())]
+    return sorted(same or readable, key=lambda t: rank[str(t["format"]).lower()])[0]
+
+
 class VideoIndex:
     def __init__(self):
         self.remote = bool(INDEX_URL and INTERNAL_TOKEN)

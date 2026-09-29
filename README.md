@@ -54,8 +54,8 @@ The server ships with two tool profiles:
 
 | Profile | Tools | For whom | How |
 | :--- | :--- | :--- | :--- |
-| **Core** (default) | 13 tools (discovery + video watching & search) | End users asking AI assistants about content | Works out of the box |
-| **Full** | All 32 tools (+ SEO, analytics, listening & transcription) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
+| **Core** (default) | 14 tools (discovery + video watching, transcripts & search) | End users asking AI assistants about content | Works out of the box |
+| **Full** | All 33 tools (+ SEO, analytics, listening & transcription) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
 
 On the hosted service, the public URL (`/mcp`) serves the **core** profile. The **full** profile is on a private team URL (`/team/<token>/mcp`) so the heavy analysis tools aren't open to the public or to directory crawlers. For Claude Code in this repo, set `AJ360_MCP_URL` to the team URL to get the SEO tools; without it, `.mcp.json` uses the public URL.
 
@@ -119,13 +119,14 @@ Clients without MCP Apps support ignore the view and get the same JSON as before
 
 ### Video understanding
 
-`watch_video`, `search_video_index` and `get_video_analysis` are read-only and public. `save_video_analysis`, `listen_to_video` and `transcribe_audio` write to the index and use paid speech recognition, so they need `AJ360_ENABLE_SEO_TOOLS=1` (the team URL on the hosted service).
+`watch_video`, `get_transcript`, `search_video_index` and `get_video_analysis` are read-only and public. `save_video_analysis`, `listen_to_video` and `transcribe_audio` write to the index and use paid speech recognition, so they need `AJ360_ENABLE_SEO_TOOLS=1` (the team URL on the hosted service).
 
 The AI assistant can **see**, **read** and **hear** episodes, and every finding goes into a searchable index.
 
 | Tool | What it does |
 | :--- | :--- |
 | `watch_video` | Returns timestamped frames of an episode as images, so the assistant looks at it itself: scenes, presenters and guests, on-screen text such as name captions, tickers and quotes. |
+| `get_transcript` | Returns the full text of an episode: the platform's own subtitle file (WebVTT/SRT from Vesper) when the episode has one, otherwise a transcript saved by `listen_to_video`. Timestamped text, plain text, or a ready SRT/VTT file, for a whole episode or a time range. |
 | `save_video_analysis` | Stores what was found: summary, chapters, people (from on-screen name captions), topics, keywords and on-screen text. |
 | `listen_to_video` | Listens to an episode's own audio and transcribes it with timestamps (Whisper large-v3-turbo). DRM-protected episodes are refused. |
 | `transcribe_audio` | Transcribes speech with timestamps from an audio or video **file link you are entitled to use**, with Whisper large-v3-turbo on Cloudflare Workers AI. |
@@ -133,6 +134,8 @@ The AI assistant can **see**, **read** and **hear** episodes, and every finding 
 | `get_video_analysis` | Reads the saved analysis and transcript of an episode, or lists analysed episodes. |
 
 **How it sees.** Every episode has a public preview file: the thumbnails the player shows while you scrub, one frame every ~15 seconds at 320×180. It is not DRM-protected, and on-screen text is readable. The assistant's own model does the looking, so no extra vision API key is needed.
+
+**How it reads subtitles.** Vesper returns each episode's subtitle files with its playback details (VTT, SRT and SCC, per language). `get_transcript` reads the VTT or SRT track in the requested language. Not every episode has one: in a September 2026 sample, 1 of 20 recent episodes did, and there the subtitles cover the non-Arabic speech. When there is no file, `listen_to_video` (team) creates a transcript that `get_transcript` then returns.
 
 **How it hears.** `listen_to_video` transcribes an episode's own audio as the official player receives it. Most episodes' audio is not encrypted (24 of 25 in a September 2026 sample); episodes with DRM-protected audio are refused and never decrypted. It fetches only the requested time range, up to 60 minutes per call. Measured: a 3.4-minute episode of «مع تميم» in 21 seconds. For protected episodes, `transcribe_audio` takes a link to a file you already have the right to use, such as your archive copy, an editing export, or a file you manage on another platform. The server decodes any format with PyAV (FFmpeg) and sends 30-second chunks to Whisper. Known Whisper hallucinations over music or silence, like «اشتركوا في القناة», are dropped. On a public-domain 1954 speech, 2.5 minutes of audio took 15 seconds.
 
