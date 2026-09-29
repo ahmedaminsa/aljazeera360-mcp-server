@@ -15,8 +15,10 @@ chapters, people, topics, keywords, on-screen text) and ``search_video_index``
 finds moments across every analysed episode ("who appeared", "when was X
 discussed").
 
-HEAR — the platform's audio is DRM-protected and is never touched.
-``transcribe_audio`` transcribes an audio or video *file* the user is
+HEAR — ``listen_to_video`` transcribes an episode's own audio from the HLS
+stream the official player receives, fetching only the requested byte range.
+Most episodes' audio is unencrypted; if a stream is DRM-protected it is
+refused, never decrypted. ``transcribe_audio`` transcribes an audio or video *file* the user is
 entitled to (their archive, an export, a file they manage elsewhere): the
 server decodes it with PyAV (FFmpeg), cuts 30-second 16 kHz mono chunks and
 sends them to Whisper large-v3-turbo on Cloudflare Workers AI. The
@@ -256,7 +258,7 @@ FAILED = "[تعذّر نسخ هذا الجزء]"
 
 async def transcribe_chunks(chunks: list[tuple[int, bytes]], language: str = "ar") -> list[dict]:
     """[{start, end, text, failed?}] with absolute timestamps."""
-    sem = asyncio.Semaphore(4)
+    sem = asyncio.Semaphore(6)
     async with httpx.AsyncClient(timeout=120) as client:
         async def one(offset: int, wav: bytes):
             async with sem:
@@ -277,6 +279,104 @@ async def transcribe_chunks(chunks: list[tuple[int, bytes]], language: str = "ar
                         if (s.get("text") or "").strip() and not is_hallucination(s.get("text"))]
         parts = await asyncio.gather(*(one(o, w) for o, w in chunks))
     return [seg for part in parts for seg in part]
+
+
+# ----------------------------------------------------------------------------
+# HEAR the episode itself: the platform's HLS audio, when it is not encrypted
+# ----------------------------------------------------------------------------
+class ProtectedAudio(Exception):
+    """The episode's audio is DRM-encrypted; it is never decrypted."""
+
+
+def _attrs(line: str) -> dict:
+    return {k: v.strip('"') for k, v in re.findall(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)', line.split(":", 1)[1])}
+
+
+def pick_audio_playlist(master: str, master_url: str) -> str:
+    """URL of the audio rendition used by the lowest-bandwidth variant."""
+    from urllib.parse import urljoin
+    lines = master.splitlines()
+    variants = []
+    for i, line in enumerate(lines):
+        if line.startswith("#EXT-X-STREAM-INF"):
+            a = _attrs(line)
+            variants.append((int(a.get("BANDWIDTH", "0") or 0), a.get("AUDIO"), lines[i + 1] if i + 1 < len(lines) else ""))
+    medias = [_attrs(l) for l in lines if l.startswith("#EXT-X-MEDIA") and "TYPE=AUDIO" in l]
+    if medias:
+        group = min(variants)[1] if variants else None
+        in_group = [m for m in medias if m.get("GROUP-ID") == group] or medias
+        chosen = next((m for m in in_group if m.get("DEFAULT") == "YES"), in_group[0])
+        if chosen.get("URI"):
+            return urljoin(master_url, chosen["URI"])
+    if variants:  # audio muxed into the video variants
+        return urljoin(master_url, min(variants)[2])
+    raise ValueError("no audio in this stream")
+
+
+def parse_media_playlist(text: str) -> dict:
+    """{'encrypted', 'map': (uri, length, offset)|None, 'segments': [(start, dur, uri, length, offset)]}"""
+    out = {"encrypted": False, "map": None, "segments": []}
+    t, dur, rng, last_end = 0.0, None, None, {}
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("#EXT-X-KEY") and "METHOD=NONE" not in line:
+            out["encrypted"] = True
+        elif line.startswith("#EXT-X-MAP"):
+            a = _attrs(line)
+            br = a.get("BYTERANGE")
+            if br:
+                n, _, o = br.partition("@")
+                out["map"] = (a["URI"], int(n), int(o or 0))
+            else:
+                out["map"] = (a["URI"], None, None)
+        elif line.startswith("#EXTINF"):
+            dur = float(line.split(":", 1)[1].split(",")[0])
+        elif line.startswith("#EXT-X-BYTERANGE"):
+            n, _, o = line.split(":", 1)[1].partition("@")
+            rng = (int(n), int(o) if o else None)
+        elif line and not line.startswith("#") and dur is not None:
+            length, offset = (rng or (None, None))
+            key = line.split("?")[0]
+            if length is not None and offset is None:
+                offset = last_end.get(key, 0)
+            if length is not None:
+                last_end[key] = offset + length
+            out["segments"].append((t, dur, line, length, offset))
+            t += dur
+            dur, rng = None, None
+    return out
+
+
+async def fetch_stream_audio(hls_url: str, start: int, end: Optional[int]) -> tuple[str, int]:
+    """Download the audio for [start, end] into a temp file. Returns (path, offset_seconds)."""
+    from urllib.parse import urljoin
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30, read=180), follow_redirects=True) as client:
+        master = (await client.get(hls_url)).text
+        audio_url = pick_audio_playlist(master, hls_url)
+        pl = parse_media_playlist((await client.get(audio_url)).text)
+        if pl["encrypted"]:
+            raise ProtectedAudio()
+        segs = [sg for sg in pl["segments"] if sg[0] + sg[1] > start and (end is None or sg[0] < end)]
+        if not segs:
+            raise ValueError("no audio in that range")
+        fd, path = tempfile.mkstemp(prefix="aj360-audio-", suffix=".mp4")
+        with os.fdopen(fd, "wb") as f:
+            async def get(uri, length, offset):
+                headers = {"Range": f"bytes={offset}-{offset + length - 1}"} if length is not None else {}
+                r = await client.get(urljoin(audio_url, uri), headers=headers)
+                r.raise_for_status()
+                return r.content
+            if pl["map"]:
+                f.write(await get(*pl["map"]))
+            same_file = all(sg[3] is not None and sg[2].split("?")[0] == segs[0][2].split("?")[0] for sg in segs)
+            if same_file:
+                # One ranged request for the whole contiguous run of segments.
+                first, last = segs[0], segs[-1]
+                f.write(await get(first[2], last[4] + last[3] - first[4], first[4]))
+            else:
+                for sg in segs:
+                    f.write(await get(sg[2], sg[3], sg[4]))
+        return path, int(segs[0][0])
 
 
 # ----------------------------------------------------------------------------

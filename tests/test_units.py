@@ -57,9 +57,9 @@ def test_seo_tool_returns_function_unchanged_when_disabled():
     assert callable(server.audit_metadata_quality)
 
 
-def test_default_profile_registers_10_tools():
+def test_default_profile_registers_13_tools():
     tools = server.mcp._tool_manager._tools
-    assert len(tools) == 10 or os.environ.get("AJ360_ENABLE_SEO_TOOLS")
+    assert len(tools) == 13 or os.environ.get("AJ360_ENABLE_SEO_TOOLS")
 
 
 def test_dashboard_auth_denies_wrong_token():
@@ -282,7 +282,44 @@ def test_audio_is_decoded_into_timed_chunks(tmp_path):
     assert video_intel.decode_to_chunks(str(path), 30, 60)[0][0] == 30
 
 
-def test_video_tools_are_team_only():
+def test_read_only_video_tools_are_public_and_writers_are_team_only():
     public = set(server.mcp._tool_manager._tools)
-    video = {"watch_video", "save_video_analysis", "transcribe_audio", "search_video_index", "get_video_analysis"}
-    assert not (video & public) or os.environ.get("AJ360_ENABLE_SEO_TOOLS")
+    assert {"watch_video", "search_video_index", "get_video_analysis"} <= public
+    writers = {"save_video_analysis", "transcribe_audio", "listen_to_video"}
+    assert not (writers & public) or os.environ.get("AJ360_ENABLE_SEO_TOOLS")
+
+
+MASTER = """#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio-hi",URI="audio/hi/index.m3u8?t=1"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio-lo",DEFAULT=YES,URI="audio/lo/index.m3u8?t=1"
+#EXT-X-STREAM-INF:BANDWIDTH=9000000,AUDIO="audio-hi"
+video/hi.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO="audio-lo"
+video/lo.m3u8
+"""
+
+AUDIO = """#EXTM3U
+#EXT-X-MAP:URI="init.mp4?t=1",BYTERANGE="1285@0"
+#EXTINF:6.0,
+#EXT-X-BYTERANGE:1000@1285
+init.mp4?t=1
+#EXTINF:6.0,
+#EXT-X-BYTERANGE:1100
+init.mp4?t=1
+#EXTINF:6.0,
+#EXT-X-BYTERANGE:900
+init.mp4?t=1
+"""
+
+
+def test_hls_audio_rendition_and_byte_ranges():
+    url = video_intel.pick_audio_playlist(MASTER, "https://cdn/x/master.m3u8?t=1")
+    assert url == "https://cdn/x/audio/lo/index.m3u8?t=1"
+    pl = video_intel.parse_media_playlist(AUDIO)
+    assert not pl["encrypted"] and pl["map"] == ("init.mp4?t=1", 1285, 0)
+    assert [(s[0], s[3], s[4]) for s in pl["segments"]] == [(0.0, 1000, 1285), (6.0, 1100, 2285), (12.0, 900, 3385)]
+
+
+def test_encrypted_audio_is_detected():
+    pl = video_intel.parse_media_playlist('#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI="skd://k"\n#EXTINF:6,\na.ts\n')
+    assert pl["encrypted"]

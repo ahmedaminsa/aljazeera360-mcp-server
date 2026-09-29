@@ -472,6 +472,20 @@ class AlJazeera360Client:
             return resp.json()
     
     @api_retry
+    async def get_playback(self, vod_id: int) -> dict:
+        """Playback descriptor as the official player receives it (hls/dash URLs, drm info)."""
+        token = await self.token_manager.get_token()
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(f"{API_BASE}/api/v3/stream/vod/{vod_id}", headers=self._get_headers(token))
+            resp.raise_for_status()
+            callback = resp.json().get("playerUrlCallback")
+            if not callback:
+                raise ValueError("no playback available for this video")
+            resp = await client.get(callback)
+            resp.raise_for_status()
+            return resp.json()
+
+    @api_retry
     async def search_content(self, query: str, page_size: int = 20) -> dict:
         """Search for content across the platform.
         
@@ -993,7 +1007,7 @@ async def play_video(video_id: int) -> str:
             "access_level": access,
             "requires_sign_in": access == "GRANTED_ON_SIGN_IN",
             "watch_url": watch_url,
-            # Playback stays on the official player: streams are DRM-protected
+            # Playback stays on the official player: some streams are DRM-protected
             # and IP-bound, so the page (not a stream URL) is what gets embedded.
             "embed_url": watch_url,
             "player": "Official Al Jazeera 360 player (embedded where the AI app allows it)",
@@ -3524,7 +3538,7 @@ async def generate_series_schema(series_id: int) -> str:
 # Video understanding: see, read, hear, remember (team profile)
 # ============================================================================
 # See video_intel.py for how each part works and what it deliberately does not
-# touch (the DRM-protected stream).
+# touch (DRM-protected audio is refused, never decrypted).
 
 import video_intel  # noqa: E402
 from mcp.server.fastmcp import Image as MCPImage  # noqa: E402
@@ -3545,7 +3559,7 @@ async def _video_meta(video_id: int) -> dict:
     }
 
 
-@seo_tool(annotations=ToolAnnotations(title="Watch Video (مشاهدة الفيديو)", readOnlyHint=True),
+@mcp.tool(annotations=ToolAnnotations(title="Watch Video (مشاهدة الفيديو)", readOnlyHint=True),
           structured_output=False)
 @track_request("watch_video")
 async def watch_video(video_id: int, start_minute: float = 0, end_minute: Optional[float] = None,
@@ -3671,23 +3685,7 @@ async def transcribe_audio(video_id: int, audio_url: str, language: str = "ar",
         chunks = await asyncio.to_thread(video_intel.decode_to_chunks, path, start, end)
         if not chunks:
             return json.dumps({"error": "No audio found in that range."}, ensure_ascii=False)
-        segments = await video_intel.transcribe_chunks(chunks, language or "ar")
-        failed = sum(1 for s in segments if s.get("failed"))
-        if failed == len(segments):
-            return json.dumps({"error": "Speech recognition failed for every part of the file."}, ensure_ascii=False)
-        moments = [{"t_sec": int(s["start"]), "kind": "transcript", "text": s["text"],
-                    "norm": video_intel.normalize(s["text"])} for s in segments if not s.get("failed")]
-        await video_intel.index.save({k: meta[k] for k in ("id", "title", "series", "duration", "watch_url")},
-                                     {"transcribed_range": [start, chunks[-1][0] + video_intel.CHUNK_SECONDS]},
-                                     ["transcript"], moments)
-        lines = [f"[{video_intel.fmt_ts(s['start'])}] {s['text']}" for s in segments]
-        text = "\n".join(lines)
-        return json.dumps({
-            "video_id": meta["id"], "title": meta["title"],
-            "transcribed": f"{video_intel.fmt_ts(start)} – {video_intel.fmt_ts(chunks[-1][0] + video_intel.CHUNK_SECONDS)}",
-            "segments": len(moments), "failed_parts": failed, "saved_to_index": True,
-            "transcript": text[:20000] + ("\n… (truncated here; the full transcript is in the index)" if len(text) > 20000 else ""),
-        }, ensure_ascii=False, indent=2)
+        return json.dumps(await _transcribe_and_store(meta, chunks, language, "file"), ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"transcribe_audio {video_id}: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -3696,7 +3694,86 @@ async def transcribe_audio(video_id: int, audio_url: str, language: str = "ar",
             os.remove(path)
 
 
-@seo_tool(annotations=ToolAnnotations(title="Search Video Index (البحث داخل الحلقات)", readOnlyHint=True))
+async def _transcribe_and_store(meta: dict, chunks: list, language: str, source: str) -> dict:
+    segments = await video_intel.transcribe_chunks(chunks, language or "ar")
+    failed = sum(1 for s in segments if s.get("failed"))
+    if not segments or failed == len(segments):
+        return {"error": "Speech recognition failed for every part of the audio."}
+    moments = [{"t_sec": int(s["start"]), "kind": "transcript", "text": s["text"],
+                "norm": video_intel.normalize(s["text"])} for s in segments if not s.get("failed")]
+    span = [chunks[0][0], chunks[-1][0] + video_intel.CHUNK_SECONDS]
+    await video_intel.index.save({k: meta[k] for k in ("id", "title", "series", "duration", "watch_url")},
+                                 {"transcribed_range": span, "transcript_source": source},
+                                 ["transcript"], moments)
+    text = "\n".join(f"[{video_intel.fmt_ts(m['t_sec'])}] {m['text']}" for m in moments)
+    return {
+        "video_id": meta["id"], "title": meta["title"], "series": meta["series"],
+        "transcribed": f"{video_intel.fmt_ts(span[0])} – {video_intel.fmt_ts(min(span[1], meta['duration'] or span[1]))}",
+        "source": source, "segments": len(moments), "failed_parts": failed, "saved_to_index": True,
+        "transcript": text[:20000] + ("\n… (truncated here; the full transcript is in the index)" if len(text) > 20000 else ""),
+    }
+
+
+LISTEN_MAX_MINUTES = 60
+
+
+@seo_tool(annotations=ToolAnnotations(title="Listen to Video (الاستماع للحلقة)",
+                                      readOnlyHint=False, destructiveHint=False, idempotentHint=True))
+@track_request("listen_to_video")
+async def listen_to_video(video_id: int, start_minute: float = 0, end_minute: Optional[float] = None,
+                          language: str = "ar") -> str:
+    """
+    Listen to an Al Jazeera 360 episode and transcribe what is said, with timestamps
+    (Whisper large-v3-turbo). Uses the episode's own audio as the official player receives
+    it. Episodes whose audio is DRM-protected are refused, never decrypted; for those, use
+    transcribe_audio with a file you are entitled to. Up to 60 minutes per call: for longer
+    episodes call again with the next range. The transcript is saved to the video index.
+
+    الاستماع لحلقة من الجزيرة 360 وتفريغ الكلام بالتوقيت. حتى 60 دقيقة في كل مرة.
+
+    Args:
+        video_id: Video ID
+        start_minute: Start of the range, in minutes (default 0)
+        end_minute: End of the range (default: start + 60 minutes, or the end of the episode)
+        language: Spoken language code (default "ar")
+    """
+    if not video_intel.transcription_available():
+        return json.dumps({"error": "Transcription is not configured on this server."}, ensure_ascii=False)
+    path = None
+    try:
+        meta = await _video_meta(video_id)
+        start = int(max(0.0, float(start_minute or 0)) * 60)
+        end = int(float(end_minute) * 60) if end_minute is not None else start + LISTEN_MAX_MINUTES * 60
+        end = min(end, start + LISTEN_MAX_MINUTES * 60)
+        if meta.get("duration"):
+            end = min(end, int(meta["duration"]))
+        if end <= start:
+            return json.dumps({"error": "Empty range.", "duration": format_duration(meta.get("duration"))}, ensure_ascii=False)
+
+        stream = await client.get_playback(meta["id"])
+        hls = (stream.get("hls") or [{}])[0]
+        if hls.get("drm"):
+            raise video_intel.ProtectedAudio()
+        path, offset = await video_intel.fetch_stream_audio(hls["url"], start, end)
+        chunks = await asyncio.to_thread(video_intel.decode_to_chunks, path, 0, end - offset)
+        chunks = [(o + offset, w) for o, w in chunks if o + offset < end]
+        result = await _transcribe_and_store(meta, chunks, language, "platform audio")
+        if "error" not in result and meta.get("duration") and end < meta["duration"]:
+            result["next"] = f"Continue with start_minute={end / 60:g}"
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    except video_intel.ProtectedAudio:
+        return json.dumps({"error": "This episode's audio is DRM-protected, so it cannot be listened to. "
+                                    "Use transcribe_audio with a file you are entitled to use.",
+                           "video_id": video_id}, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"listen_to_video {video_id}: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    finally:
+        if path and os.path.exists(path):
+            os.remove(path)
+
+
+@mcp.tool(annotations=ToolAnnotations(title="Search Video Index (البحث داخل الحلقات)", readOnlyHint=True))
 @track_request("search_video_index")
 async def search_video_index(query: str, kind: str = "all", limit: int = 40) -> str:
     """
@@ -3729,7 +3806,7 @@ async def search_video_index(query: str, kind: str = "all", limit: int = 40) -> 
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@seo_tool(annotations=ToolAnnotations(title="Get Video Analysis (تحليل الحلقة المحفوظ)", readOnlyHint=True))
+@mcp.tool(annotations=ToolAnnotations(title="Get Video Analysis (تحليل الحلقة المحفوظ)", readOnlyHint=True))
 @track_request("get_video_analysis")
 async def get_video_analysis(video_id: Optional[int] = None) -> str:
     """
@@ -3877,8 +3954,8 @@ PRIVACY_HTML = """<!DOCTYPE html>
     </ul>
     <p><strong>IP addresses are not stored.</strong> To protect the service, the number of requests per conversation (or, without one, per network range) is counted for a minute in Cloudflare's rate limiter, then discarded. Please do not type personal information into search requests, since search terms are logged as written.</p>
 
-    <h2>3. Video analysis (team tools only)</h2>
-    <p>The private team tools can store analyses of public Al Jazeera 360 episodes (summaries, chapters, names shown on screen, topics) and transcripts of audio files that team members choose to submit. Audio submitted for transcription is sent to Cloudflare Workers AI (Whisper) and is not kept after transcription. People are identified only from names shown on screen, never by facial recognition.</p>
+    <h2>3. Video analysis</h2>
+    <p>The service can show preview frames of public episodes to the AI assistant, and the private team tools can store analyses of public Al Jazeera 360 episodes (summaries, chapters, names shown on screen, topics) and transcripts of audio files that team members choose to submit. Episode audio (listened to from the platform's unencrypted streams only) and audio files submitted for transcription are sent to Cloudflare Workers AI (Whisper) and are not kept after transcription. People are identified only from names shown on screen, never by facial recognition.</p>
 
     <h2>4. Where it is stored and for how long</h2>
     <p>Analytics are stored in a Cloudflare D1 database operated by the maintainers. Records older than 180 days are deleted automatically every day. The data is used only to measure usage and improve the service, and is never sold or shared with third parties or advertising services. Only aggregate figures (for example "most searched programmes") may be shared publicly or with Al Jazeera 360 teams.</p>
@@ -4068,7 +4145,7 @@ async def api_health(request: Request):
     return JSONResponse({
         "status": "ok",
         "server": "aljazeera360-mcp",
-        "version": "2.2.0",
+        "version": "2.3.0",
         "transport": _transport_mode,
         "privacy_policy": "/privacy",
         "documentation": "/docs",

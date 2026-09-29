@@ -20,7 +20,7 @@ the aljazeera360.com design system (AlJazeera typeface, black background,
 * Player   — the official aljazeera360.com player embedded in an iframe.
 
 Why the player embeds the official page instead of a stream URL:
-the platform's streams are DRM-protected (Widevine / PlayReady), the stream
+some episodes are DRM-protected (Widevine / PlayReady), the stream
 token is bound to the IP address that requested it, and the platform API only
 allows CORS from aljazeera360.com. A server-side stream URL would therefore
 never play in the viewer's browser, and proxying the stream would bypass the
