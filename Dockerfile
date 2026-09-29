@@ -11,6 +11,7 @@ COPY server.py .
 COPY analytics.py .
 COPY mcp_apps.py .
 COPY video_intel.py .
+COPY studio.py .
 
 # Expose ports: MCP server + Analytics dashboard
 EXPOSE 8080 9090

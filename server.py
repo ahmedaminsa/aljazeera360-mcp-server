@@ -3699,12 +3699,13 @@ async def _transcribe_and_store(meta: dict, chunks: list, language: str, source:
     failed = sum(1 for s in segments if s.get("failed"))
     if not segments or failed == len(segments):
         return {"error": "Speech recognition failed for every part of the audio."}
-    moments = [{"t_sec": int(s["start"]), "kind": "transcript", "text": s["text"],
+    moments = [{"t_sec": int(s["start"]), "kind": "transcript", "text": s["text"], "words": s.get("words") or [],
                 "norm": video_intel.normalize(s["text"])} for s in segments if not s.get("failed")]
     span = [chunks[0][0], chunks[-1][0] + video_intel.CHUNK_SECONDS]
+    # Only this range is replaced, so a long episode can be transcribed in several calls.
     await video_intel.index.save({k: meta[k] for k in ("id", "title", "series", "duration", "watch_url")},
                                  {"transcribed_range": span, "transcript_source": source},
-                                 ["transcript"], moments)
+                                 ["transcript"], moments, span=span)
     text = "\n".join(f"[{video_intel.fmt_ts(m['t_sec'])}] {m['text']}" for m in moments)
     return {
         "video_id": meta["id"], "title": meta["title"], "series": meta["series"],
@@ -3739,7 +3740,6 @@ async def listen_to_video(video_id: int, start_minute: float = 0, end_minute: Op
     """
     if not video_intel.transcription_available():
         return json.dumps({"error": "Transcription is not configured on this server."}, ensure_ascii=False)
-    path = None
     try:
         meta = await _video_meta(video_id)
         start = int(max(0.0, float(start_minute or 0)) * 60)
@@ -3750,14 +3750,7 @@ async def listen_to_video(video_id: int, start_minute: float = 0, end_minute: Op
         if end <= start:
             return json.dumps({"error": "Empty range.", "duration": format_duration(meta.get("duration"))}, ensure_ascii=False)
 
-        stream = await client.get_playback(meta["id"])
-        hls = (stream.get("hls") or [{}])[0]
-        if hls.get("drm"):
-            raise video_intel.ProtectedAudio()
-        path, offset = await video_intel.fetch_stream_audio(hls["url"], start, end)
-        chunks = await asyncio.to_thread(video_intel.decode_to_chunks, path, 0, end - offset)
-        chunks = [(o + offset, w) for o, w in chunks if o + offset < end]
-        result = await _transcribe_and_store(meta, chunks, language, "platform audio")
+        result = await _listen(meta, start, end, language)
         if "error" not in result and meta.get("duration") and end < meta["duration"]:
             result["next"] = f"Continue with start_minute={end / 60:g}"
         return json.dumps(result, ensure_ascii=False, indent=2)
@@ -3768,6 +3761,20 @@ async def listen_to_video(video_id: int, start_minute: float = 0, end_minute: Op
     except Exception as e:
         logger.error(f"listen_to_video {video_id}: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+async def _listen(meta: dict, start: int, end: int, language: str = "ar") -> dict:
+    """Transcribe [start, end) of the episode's own audio and save it. Raises ProtectedAudio."""
+    stream = await client.get_playback(meta["id"])
+    hls = (stream.get("hls") or [{}])[0]
+    if hls.get("drm"):
+        raise video_intel.ProtectedAudio()
+    path = None
+    try:
+        path, offset = await video_intel.fetch_stream_audio(hls["url"], start, end)
+        chunks = await asyncio.to_thread(video_intel.decode_to_chunks, path, 0, end - offset)
+        chunks = [(o + offset, w) for o, w in chunks if o + offset < end]
+        return await _transcribe_and_store(meta, chunks, language, "platform audio")
     finally:
         if path and os.path.exists(path):
             os.remove(path)
@@ -3778,8 +3785,9 @@ async def listen_to_video(video_id: int, start_minute: float = 0, end_minute: Op
 async def search_video_index(query: str, kind: str = "all", limit: int = 40) -> str:
     """
     Search inside analysed episodes: who appeared, when a topic came up, what was said or
-    shown on screen. Returns episodes with the timestamps of each match. Covers episodes
-    saved with save_video_analysis or transcribed with transcribe_audio.
+    shown on screen. Returns episodes with the timestamps of each match; for speech the
+    exact second the phrase is spoken (exact_sec, from word timings). Covers episodes
+    saved with save_video_analysis or transcribed with listen_to_video / transcribe_audio.
 
     البحث داخل الحلقات المحللة: مين ظهر، وإمتى اتكلموا عن موضوع، وإيه اللي اتقال أو اتكتب.
 
@@ -3797,8 +3805,14 @@ async def search_video_index(query: str, kind: str = "all", limit: int = 40) -> 
             g = grouped.setdefault(r["video_id"], {"video_id": r["video_id"], "title": r.get("title"),
                                                    "series": r.get("series"), "watch_url": r.get("watch_url"),
                                                    "matches": []})
-            g["matches"].append({"at": video_intel.fmt_ts(r["t_sec"]) if r["kind"] not in ("topic", "keyword") else None,
-                                 "kind": r["kind"], "text": r["text"]})
+            match = {"at": video_intel.fmt_ts(r["t_sec"]) if r["kind"] not in ("topic", "keyword") else None,
+                     "kind": r["kind"], "text": r["text"]}
+            words = r.get("words")
+            exact = video_intel.exact_time(json.loads(words) if isinstance(words, str) else words, query)
+            if exact is not None:  # the second the phrase itself is spoken (word timings)
+                match["exact_sec"] = round(exact, 2)
+                match["at"] = video_intel.fmt_ts(exact)
+            g["matches"].append(match)
         return json.dumps({"query": query, "kind": kind, "episodes": list(grouped.values()),
                            "total_matches": len(res.get("results", []))}, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -3853,6 +3867,42 @@ def _render_cues(cues: list[dict], fmt: str) -> str:
     return "\n".join(f"[{video_intel.fmt_ts(c['start'])}] {c['text']}" for c in cues)
 
 
+async def _platform_subtitles(video_id: int, language: str = "ar") -> tuple[list, Optional[str], list]:
+    """(cues, source, tracks) from the subtitle file Vesper serves with the playback details."""
+    tracks = []
+    try:
+        stream = await client.get_playback(video_id)
+        tracks = ((stream.get("hls") or [{}])[0].get("subtitles")
+                  or (stream.get("dash") or [{}])[0].get("subtitles") or [])
+    except Exception as e:
+        logger.info(f"subtitles {video_id}: no playback ({e})")
+    track = video_intel.pick_subtitle(tracks, language)
+    if not track:
+        return [], None, tracks
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as http:
+        resp = await http.get(track["url"])
+        resp.raise_for_status()
+    cues = video_intel.parse_subtitles(resp.content.decode("utf-8-sig", errors="replace"))
+    return cues, f"platform subtitles ({track.get('language')}, {track.get('format')})", tracks
+
+
+async def _saved_transcript(video_id: int) -> tuple[list, Optional[str]]:
+    """(cues with word timings, source) from the video index."""
+    saved = await video_intel.index.get(video_id, words=True)
+    ms = sorted((m for m in saved.get("moments", []) if m.get("kind") == "transcript"), key=lambda m: m["t_sec"])
+    cues = []
+    for i, m in enumerate(ms):
+        words = m.get("words") or []
+        end = words[-1][1] if words else (ms[i + 1]["t_sec"] if i + 1 < len(ms) else m["t_sec"] + 5)
+        cues.append({"start": float(words[0][0]) if words else float(m["t_sec"]), "end": float(end),
+                     "text": m["text"], "words": words})
+    if not cues:
+        return [], None
+    data = (saved.get("analysis") or {}).get("data")
+    data = json.loads(data) if isinstance(data, str) else (data or {})
+    return cues, f"saved transcript ({data.get('transcript_source') or 'Whisper'})"
+
+
 @mcp.tool(annotations=ToolAnnotations(title="Get Transcript (نص الحلقة والترجمة)", readOnlyHint=True))
 @track_request("get_transcript")
 async def get_transcript(video_id: int, language: str = "ar", format: str = "text",
@@ -3877,31 +3927,9 @@ async def get_transcript(video_id: int, language: str = "ar", format: str = "tex
         meta = await _video_meta(video_id)
         head = {"video_id": meta["id"], "title": meta["title"], "series": meta["series"],
                 "duration": format_duration(meta.get("duration")), "watch_url": meta["watch_url"]}
-        cues, source, tracks = [], None, []
-        try:
-            stream = await client.get_playback(meta["id"])
-            tracks = ((stream.get("hls") or [{}])[0].get("subtitles")
-                      or (stream.get("dash") or [{}])[0].get("subtitles") or [])
-        except Exception as e:
-            logger.info(f"get_transcript {video_id}: no playback ({e})")
-        track = video_intel.pick_subtitle(tracks, language)
-        if track:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as http:
-                resp = await http.get(track["url"])
-                resp.raise_for_status()
-            cues = video_intel.parse_subtitles(resp.content.decode("utf-8-sig", errors="replace"))
-            source = f"platform subtitles ({track.get('language')}, {track.get('format')})"
+        cues, source, tracks = await _platform_subtitles(meta["id"], language)
         if not cues:
-            saved = await video_intel.index.get(meta["id"])
-            ms = [m for m in saved.get("moments", []) if m.get("kind") == "transcript"]
-            ms.sort(key=lambda m: m["t_sec"])
-            cues = [{"start": float(m["t_sec"]),
-                     "end": float(ms[i + 1]["t_sec"]) if i + 1 < len(ms) else float(m["t_sec"]) + 5,
-                     "text": m["text"]} for i, m in enumerate(ms)]
-            if cues:
-                data = (saved.get("analysis") or {}).get("data")
-                data = json.loads(data) if isinstance(data, str) else (data or {})
-                source = f"saved transcript ({data.get('transcript_source') or 'Whisper'})"
+            cues, source = await _saved_transcript(meta["id"])
         languages = sorted({f"{t.get('language')}:{t.get('format')}" for t in tracks})
         if not cues:
             return json.dumps({**head, "available": False, "subtitle_tracks": languages,
@@ -3930,6 +3958,306 @@ async def get_transcript(video_id: int, language: str = "ar", format: str = "tex
     except Exception as e:
         logger.error(f"get_transcript {video_id}: {e}")
         return json.dumps({"error": str(e), "video_id": video_id}, ensure_ascii=False)
+
+
+# ============================================================================
+# Studio: ad breaks, social pack, clips, daily auto-indexing (team profile)
+# ============================================================================
+import studio  # noqa: E402
+
+
+async def _episode_cues(meta: dict) -> tuple[list, Optional[str]]:
+    """Best available speech for an episode: saved Whisper transcript (word timings) first."""
+    cues, source = await _saved_transcript(meta["id"])
+    if not cues:
+        cues, source, _ = await _platform_subtitles(meta["id"])
+    return cues, source
+
+
+async def _episode_frames(meta: dict) -> list:
+    if not meta.get("preview_url"):
+        return []
+    try:
+        _, frames = video_intel.parse_bif(await video_intel.fetch_bif(meta["preview_url"]))
+        return frames
+    except Exception as e:
+        logger.info(f"frames {meta['id']}: {e}")
+        return []
+
+
+async def _chapter_starts(video_id: int) -> list[int]:
+    saved = await video_intel.index.get(video_id)
+    return [m["t_sec"] for m in saved.get("moments", []) if m.get("kind") == "chapter"]
+
+
+async def _compute_ad_breaks(meta: dict, count: Optional[int] = None, min_gap_minutes: float = 7,
+                             keywords: Optional[list[str]] = None) -> dict:
+    cues, source = await _episode_cues(meta)
+    frames = await _episode_frames(meta)
+    scenes = await asyncio.to_thread(studio.scene_changes, frames) if frames else []
+    timeline = studio.speech_timeline(cues)
+    duration = float(meta.get("duration") or (timeline[-1][1] if timeline else 0))
+    breaks = studio.ad_breaks(duration, timeline, scenes, await _chapter_starts(meta["id"]),
+                              count=count, min_gap_minutes=min_gap_minutes)
+    return {"breaks": breaks, "cues": cues, "source": source,
+            "placements": studio.keyword_placements(keywords or [], cues, breaks),
+            "signals": {"speech": source or "none (scene changes only)", "preview_frames": len(frames)}}
+
+
+@seo_tool(annotations=ToolAnnotations(title="Suggest Ad Breaks (نقاط الإعلانات)",
+                                      readOnlyHint=False, destructiveHint=False, idempotentHint=True))
+@track_request("suggest_ad_breaks")
+async def suggest_ad_breaks(video_id: int, count: Optional[int] = None, min_gap_minutes: float = 7,
+                            advertiser_keywords: Optional[list[str]] = None) -> str:
+    """
+    Suggest mid-roll ad-break points for an episode, for contextual advertising.
+    Each point is a natural pause in speech (word timings), scored higher near a scene
+    change or chapter start, spaced at least min_gap_minutes apart, never in the first 3
+    minutes or the last minute. Each break carries the text just before and after it, a
+    first-pass ad category (travel, food, technology, finance...) and a brand-safety flag
+    (sensitive when war, violence or death is mentioned within a minute). With
+    advertiser_keywords, also returns where each keyword is said and the next break after
+    it. Uses the saved transcript (run listen_to_video first) or the platform subtitles;
+    without either, scene changes only. The result is saved to the video index and
+    returned as a CSV cue sheet too.
+
+    اقتراح نقاط فواصل إعلانية داخل الحلقة مع تصنيف إعلاني ومدى ملاءمة المحتوى للمعلنين.
+
+    Args:
+        video_id: Video ID
+        count: Number of breaks (default: one per min_gap_minutes)
+        min_gap_minutes: Minimum minutes between breaks (default 7)
+        advertiser_keywords: Words an advertiser wants to appear next to, e.g. ["سفر", "طيران"]
+    """
+    try:
+        meta = await _video_meta(video_id)
+        res = await _compute_ad_breaks(meta, _bound(count, 1, 20, 0) or None,
+                                       max(2.0, min(float(min_gap_minutes or 7), 30.0)),
+                                       [k for k in (advertiser_keywords or []) if str(k).strip()][:10])
+        await video_intel.index.save({k: meta[k] for k in ("id", "title", "series", "duration", "watch_url")},
+                                     {"ad_breaks": res["breaks"]}, [], [])
+        out = {"video_id": meta["id"], "title": meta["title"], "series": meta["series"],
+               "duration": format_duration(meta.get("duration")), "watch_url": meta["watch_url"],
+               "signals": res["signals"], "breaks": res["breaks"],
+               "cue_sheet_csv": studio.cue_sheet(res["breaks"]),
+               "notes": "Categories and brand safety are a keyword first pass; read before/after to confirm. "
+                        "Enter the chosen times as ad markers in Vesper (DVE)."}
+        if advertiser_keywords:
+            out["advertiser_placements"] = res["placements"]
+        if not res["cues"]:
+            out["hint"] = "No transcript yet: run listen_to_video for pause-accurate breaks."
+        return json.dumps(out, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"suggest_ad_breaks {video_id}: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+SOCIAL_DELIVERABLES = [
+    "5 clip moments (use clip_moments; cut with make_clip) with a hook line for each",
+    "3-5 quote cards: the quote, who said it (from on-screen captions/people), and its timestamp",
+    "X/Twitter: one post (≤280 chars) + a 5-7 post thread of the key points with timestamps",
+    "Instagram/TikTok caption with a strong first line and hashtags",
+    "LinkedIn post: analytical angle, 120-180 words",
+    "5 alternative headlines for A/B testing",
+    "A short English summary (2-3 sentences) for English-speaking audiences",
+    "Always link to watch_url; quote only what was actually said",
+]
+
+
+@seo_tool(annotations=ToolAnnotations(title="Social Media Pack (باكدج السوشيال ميديا)", readOnlyHint=True),
+          structured_output=False)
+@track_request("get_social_pack")
+async def get_social_pack(video_id: int, quotes: int = 8) -> list:
+    """
+    Everything the social media team needs to promote an episode, in one call: episode
+    details, the saved analysis (summary, chapters, people), the timestamped transcript,
+    quotable lines with in/out times, 30-60 s clip-ready moments, hashtag candidates, key
+    frames as an image, and the list of deliverables to write (posts per platform,
+    headlines, quote cards). Needs a transcript (listen_to_video) or platform subtitles
+    for quotes and clips.
+
+    كل ما يحتاجه فريق السوشيال ميديا لحلقة: اقتباسات بتوقيتها، لحظات للقص، هاشتاجات، وصور.
+
+    Args:
+        video_id: Video ID
+        quotes: Number of quote candidates (default 8)
+    """
+    try:
+        meta = await _video_meta(video_id)
+        cues, source = await _episode_cues(meta)
+        saved = await video_intel.index.get(meta["id"])
+        data = (saved.get("analysis") or {}).get("data")
+        data = json.loads(data) if isinstance(data, str) else (data or {})
+        q = studio.quote_candidates(cues, _bound(quotes, 1, 20, 8))
+        transcript = "\n".join(f"[{video_intel.fmt_ts(c['start'])}] {c['text']}" for c in cues)
+        pack = {
+            "video_id": meta["id"], "title": meta["title"], "series": meta["series"],
+            "episode_number": meta["episode_number"], "duration": format_duration(meta.get("duration")),
+            "watch_url": meta["watch_url"], "platform_description": meta["description"],
+            "analysis": {k: data.get(k) for k in ("summary", "chapters", "people", "topics", "keywords",
+                                                  "on_screen_text") if data.get(k)},
+            "transcript_source": source,
+            "quote_candidates": q,
+            "clip_moments": studio.clip_moments(q, cues),
+            "hashtag_candidates": studio.hashtags(meta["title"], meta["series"], cues),
+            "brand_safety": studio.classify(" ".join(c["text"] for c in cues))["brand_safety"] if cues else None,
+            "deliverables": SOCIAL_DELIVERABLES,
+            "transcript": transcript[:40000] + ("\n…" if len(transcript) > 40000 else ""),
+        }
+        if not cues:
+            pack["hint"] = "No transcript yet: run listen_to_video first for quotes and clip moments."
+        frames = await _episode_frames(meta)
+        items = [json.dumps(pack, ensure_ascii=False, indent=2)]
+        if frames:
+            chosen = video_intel.pick_frames(frames, 30, None, 9)
+            sheet = await asyncio.to_thread(video_intel.contact_sheet, chosen)
+            items.append(MCPImage(data=sheet, format="jpeg"))
+        return items
+    except Exception as e:
+        logger.error(f"get_social_pack {video_id}: {e}")
+        return [json.dumps({"error": str(e)}, ensure_ascii=False)]
+
+
+CLIPS_DIR = os.environ.get("AJ360_CLIPS_DIR", "clips")
+
+
+def _seconds(value) -> float:
+    """'02:15', '1:02:15', 135 or '135.5' → seconds."""
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return float(video_intel.parse_ts(value))
+QUALITIES = {"360p": 360, "480p": 504, "720p": 720, "1080p": 1080}
+
+
+async def _store_clip(path: str, name: str) -> str:
+    """Upload to the Worker's clip store (R2, public link) or keep locally."""
+    if video_intel.INDEX_URL and video_intel.INTERNAL_TOKEN:
+        with open(path, "rb") as f:
+            body = f.read()
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30, write=300, read=120)) as http:
+            resp = await http.post(f"{video_intel.INDEX_URL}/internal/clip", params={"name": name}, content=body,
+                                   headers={"x-internal-token": video_intel.INTERNAL_TOKEN,
+                                            "content-type": "video/mp4"})
+            resp.raise_for_status()
+            return resp.json()["url"]
+    os.makedirs(CLIPS_DIR, exist_ok=True)
+    dest = os.path.join(CLIPS_DIR, name)
+    os.replace(path, dest)
+    return os.path.abspath(dest)
+
+
+@seo_tool(annotations=ToolAnnotations(title="Make Clip (قص مقطع)", readOnlyHint=False,
+                                      destructiveHint=False, openWorldHint=True))
+@track_request("make_clip")
+async def make_clip(video_id: int, start: str, end: str, quality: str = "720p") -> str:
+    """
+    Cut a part of an episode into an MP4 file with sound and return a download link
+    (kept for 7 days). Up to 3 minutes per clip. The cut starts at the nearest keyframe at
+    or before `start` (a second or two earlier at most). Only episodes that are not
+    DRM-protected can be cut. Use the in/out times from get_social_pack or
+    search_video_index.
+
+    قص جزء من الحلقة كملف MP4 جاهز للنشر (حتى 3 دقائق) مع رابط تحميل.
+
+    Args:
+        video_id: Video ID
+        start: Start time, "mm:ss" / "h:mm:ss" or seconds
+        end: End time, same formats
+        quality: 360p | 480p | 720p | 1080p (default 720p)
+    """
+    path = None
+    try:
+        s, e = _seconds(start), _seconds(end)
+        if e <= s:
+            return json.dumps({"error": "end must be after start"}, ensure_ascii=False)
+        if e - s > studio.MAX_CLIP_SECONDS:
+            return json.dumps({"error": f"Clips are limited to {studio.MAX_CLIP_SECONDS // 60} minutes."},
+                              ensure_ascii=False)
+        meta = await _video_meta(video_id)
+        if meta.get("duration") and s >= meta["duration"]:
+            return json.dumps({"error": "start is after the end of the episode"}, ensure_ascii=False)
+        stream = await client.get_playback(meta["id"])
+        hls = (stream.get("hls") or [{}])[0]
+        if hls.get("drm"):
+            raise video_intel.ProtectedAudio()
+        path, real = await studio.cut_clip(hls["url"], s, e, QUALITIES.get(quality, 720))
+        size = os.path.getsize(path)
+        name = f"aj360-{meta['id']}-{int(real)}-{int(e)}.mp4"
+        url = await _store_clip(path, name)
+        return json.dumps({"video_id": meta["id"], "title": meta["title"], "clip_url": url,
+                           "from": video_intel.fmt_ts(real), "to": video_intel.fmt_ts(e),
+                           "seconds": round(e - real, 1), "quality": quality, "size_mb": round(size / 1e6, 1),
+                           "expires": "7 days", "watch_url": meta["watch_url"]}, ensure_ascii=False, indent=2)
+    except video_intel.ProtectedAudio:
+        return json.dumps({"error": "This episode is DRM-protected, so it cannot be cut.",
+                           "video_id": video_id}, ensure_ascii=False)
+    except Exception as ex:
+        logger.error(f"make_clip {video_id}: {ex}")
+        return json.dumps({"error": str(ex)}, ensure_ascii=False)
+    finally:
+        if path and os.path.exists(path):
+            os.remove(path)
+
+
+# -- Daily auto-indexing ------------------------------------------------------
+AUTO_INDEX_SECTIONS = ["AJ360-Originals", "AJA", "AJD", "Atheer", "AJ-Plus"]
+AUTO_INDEX_PER_RUN = int(os.environ.get("AJ360_AUTO_INDEX_PER_RUN", "2") or 2)
+_auto_lock = asyncio.Lock()
+
+
+async def _latest_vod_ids(per_section: int = 8) -> list[int]:
+    ids: list[int] = []
+    for sec in AUTO_INDEX_SECTIONS:
+        try:
+            data = await client.get_section_content(sec, items_per_bucket=per_section)
+        except Exception as e:
+            logger.info(f"auto-index: section {sec}: {e}")
+            continue
+        for bucket in data.get("buckets", []):
+            for item in bucket.get("contentList", [])[:per_section]:
+                if item.get("type") == "VOD" and item.get("id") and int(item["id"]) not in ids:
+                    ids.append(int(item["id"]))
+    return ids
+
+
+async def _auto_index_one(video_id: int) -> str:
+    meta = await _video_meta(video_id)
+    ident = {k: meta[k] for k in ("id", "title", "series", "duration", "watch_url")}
+    stamp = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    try:
+        duration = int(meta.get("duration") or 0)
+        for start in range(0, max(duration, 1), LISTEN_MAX_MINUTES * 60):
+            res = await _listen(meta, start, min(start + LISTEN_MAX_MINUTES * 60, duration or start + 3600))
+            if "error" in res:
+                raise RuntimeError(res["error"])
+        ads = await _compute_ad_breaks(meta)
+        await video_intel.index.save(ident, {"ad_breaks": ads["breaks"],
+                                             "auto_index": {"status": "done", "at": stamp}}, [], [])
+        return "done"
+    except video_intel.ProtectedAudio:
+        await video_intel.index.save(ident, {"auto_index": {"status": "protected", "at": stamp}}, [], [])
+        return "protected"
+    except Exception as e:
+        logger.error(f"auto-index {video_id}: {e}")
+        await video_intel.index.save(ident, {"auto_index": {"status": "failed", "at": stamp,
+                                                            "error": str(e)[:200]}}, [], [])
+        return "failed"
+
+
+async def auto_index_run(limit: int = AUTO_INDEX_PER_RUN) -> dict:
+    """Transcribe and ad-break the newest episodes that are not indexed yet."""
+    if _auto_lock.locked():
+        return {"skipped": "a run is already in progress"}
+    async with _auto_lock:
+        known = {v["video_id"]: v for v in (await video_intel.index.get(None)).get("videos", [])}
+        todo = [i for i in await _latest_vod_ids()
+                if not (known.get(i, {}).get("transcript_segments") or known.get(i, {}).get("auto_status"))]
+        done = {}
+        for vid in todo[:limit]:
+            done[vid] = await _auto_index_one(vid)
+        logger.info(f"auto-index: {done} ({len(todo)} waiting)")
+        return {"indexed": done, "waiting": max(0, len(todo) - limit)}
 
 
 # ============================================================================
@@ -4234,6 +4562,23 @@ async def api_recent(request: Request):
     limit = int(request.query_params.get("limit", "50"))
     recent = tracker.get_recent_requests(limit=limit)
     return JSONResponse(recent)
+
+
+@mcp.custom_route("/jobs/auto-index", methods=["POST"])
+async def auto_index_route(request: Request):
+    """Hourly from the Worker's cron: index the newest episodes in the background."""
+    token = video_intel.INTERNAL_TOKEN
+    if not token or request.headers.get("x-internal-token") != token:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    if _auto_lock.locked():
+        return JSONResponse({"started": False, "reason": "already running"})
+    task = asyncio.create_task(auto_index_run())
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    return JSONResponse({"started": True}, status_code=202)
+
+
+_background: set = set()
 
 
 @mcp.custom_route("/api/health", methods=["GET"])

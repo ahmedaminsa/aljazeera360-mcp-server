@@ -366,3 +366,79 @@ def test_transcript_renders_srt():
     cues = [{"start": 1.0, "end": 2.5, "text": "مرحبا"}]
     assert server._render_cues(cues, "srt") == "1\n00:00:01,000 --> 00:00:02,500\nمرحبا"
     assert server._render_cues(cues, "text") == "[00:01] مرحبا"
+
+
+# -- Studio: ad breaks, social pack, clips ------------------------------------
+import studio  # noqa: E402
+
+
+def _cues():
+    words = lambda t, text: [[t + i * 0.4, t + i * 0.4 + 0.35, w] for i, w in enumerate(text.split())]  # noqa: E731
+    lines = [(10, "مرحبا بكم في حلقة اليوم عن السفر والطيران."),
+             (200, "تحدثنا عن السياحة في المنطقة وأسعار الفنادق."),
+             (400, "ثم انتقلنا إلى الحرب والقصف وسقوط الضحايا."),
+             (620, "وفي الختام نتحدث عن التكنولوجيا والذكاء الاصطناعي لأول مرة في تاريخ البرنامج.")]
+    return [{"start": t, "end": t + 5, "text": x, "words": words(t, x)} for t, x in lines]
+
+
+def test_word_timings_give_the_exact_second_of_a_phrase():
+    w = [[12.0, 12.3, "ثم"], [12.3, 12.9, "والسفر"], [12.9, 13.4, "بالطائرة"]]
+    assert video_intel.exact_time(w, "السفر") == 12.3
+    assert video_intel.exact_time(w, "السفر بالطائرة") == 12.3
+    assert video_intel.exact_time(w, "القطار") is None
+
+
+def test_transcript_saves_only_replace_their_own_range(tmp_path, monkeypatch):
+    monkeypatch.setattr(video_intel, "LOCAL_DB", str(tmp_path / "i.db"))
+    idx = video_intel.VideoIndex()
+    idx.remote = False
+    m = lambda t, x: {"t_sec": t, "kind": "transcript", "text": x, "norm": x, "words": [[t, t + 1, x]]}  # noqa: E731
+    asyncio.run(idx.save({"id": 5}, {}, ["transcript"], [m(10, "a"), m(3000, "b")], span=[0, 3600]))
+    asyncio.run(idx.save({"id": 5}, {}, ["transcript"], [m(3700, "c")], span=[3600, 7200]))
+    got = asyncio.run(idx.get(5, words=True))["moments"]
+    assert [x["text"] for x in got] == ["a", "b", "c"] and got[0]["words"] == [[10, 11, "a"]]
+
+
+def test_classify_flags_sensitive_content_and_categories():
+    assert studio.classify("رحلة سفر وحجز فندق")["categories"][0] == "travel"
+    c = studio.classify("القصف وسقوط الضحايا")
+    assert c["brand_safety"] == "sensitive" and c["sensitive_terms"]
+
+
+def test_ad_breaks_sit_in_pauses_spaced_apart_with_safety():
+    tl = studio.speech_timeline(_cues())
+    br = studio.ad_breaks(900, tl, [(205, 0.9), (410, 0.8)], [400], min_gap_minutes=3)
+    times = [b["at_sec"] for b in br]
+    assert times and all(180 <= t <= 840 for t in times)
+    assert all(b - a >= 180 for a, b in zip(times, times[1:]))
+    assert any(b["brand_safety"] == "sensitive" for b in br)
+    placements = studio.keyword_placements(["السياحة"], _cues(), br)
+    assert placements[0]["said_at_sec"] == 200.8
+    assert studio.cue_sheet(br).startswith("break,time,seconds")
+
+
+def test_ad_breaks_without_transcript_use_scene_changes():
+    br = studio.ad_breaks(1200, [], [(300, 0.9), (320, 0.1), (800, 0.7)], [], min_gap_minutes=5)
+    assert [b["at_sec"] for b in br] == [300.0, 800.0]
+
+
+def test_social_pack_quotes_clips_and_hashtags():
+    q = studio.quote_candidates(_cues(), 3)
+    assert q and all(x["out_sec"] > x["in_sec"] for x in q)
+    assert "لأول مرة" in q[-1]["text"]
+    assert studio.clip_moments(q, _cues())[0]["seconds"] <= 60
+    tags = studio.hashtags("السلاح المسعور", "ثمن الحرب", _cues())
+    assert tags[0] == "#ثمن_الحرب" and "#الجزيرة_360" in tags
+
+
+def test_video_variant_is_chosen_by_height():
+    master = ("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080\nv1080.m3u8\n"
+              "#EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720\nv720.m3u8\n"
+              "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360\nv360.m3u8\n")
+    assert studio.pick_video_playlist(master, "https://x/m.m3u8", 720) == "https://x/v720.m3u8"
+    assert studio.pick_video_playlist(master, "https://x/m.m3u8", 100) == "https://x/v360.m3u8"
+
+
+def test_studio_tools_are_team_only():
+    public = set(server.mcp._tool_manager._tools)
+    assert not ({"suggest_ad_breaks", "get_social_pack", "make_clip"} & public) or os.environ.get("AJ360_ENABLE_SEO_TOOLS")

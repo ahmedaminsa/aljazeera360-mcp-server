@@ -275,8 +275,11 @@ async def transcribe_chunks(chunks: list[tuple[int, bytes]], language: str = "ar
                     segs = [{"start": 0, "end": CHUNK_SECONDS, "text": res["text"]}]
                 return [{"start": round(offset + float(s.get("start", 0)), 1),
                          "end": round(offset + float(s.get("end", 0)), 1),
-                         "text": (s.get("text") or "").strip()} for s in segs
-                        if (s.get("text") or "").strip() and not is_hallucination(s.get("text"))]
+                         "text": (s.get("text") or "").strip(),
+                         "words": [[round(offset + float(w.get("start", 0)), 2),
+                                    round(offset + float(w.get("end", 0)), 2), (w.get("word") or "").strip()]
+                                   for w in s.get("words") or [] if (w.get("word") or "").strip()]}
+                        for s in segs if (s.get("text") or "").strip() and not is_hallucination(s.get("text"))]
         parts = await asyncio.gather(*(one(o, w) for o, w in chunks))
     return [seg for part in parts for seg in part]
 
@@ -390,6 +393,21 @@ CREATE TABLE IF NOT EXISTS video_moments (
   id INTEGER PRIMARY KEY AUTOINCREMENT, video_id INTEGER, t_sec INTEGER, kind TEXT, text TEXT, norm TEXT);
 CREATE INDEX IF NOT EXISTS idx_moments_video ON video_moments (video_id, kind);
 """
+# Word timings ([[start, end, word], ...] as JSON) ride on each transcript moment.
+_MIGRATIONS = ("ALTER TABLE video_moments ADD COLUMN words TEXT",)
+
+
+def exact_time(words: list, query: str) -> Optional[float]:
+    """Second at which the query is spoken, from a segment's word timings.
+
+    A query word matches a spoken word that contains it, so «السفر» matches «والسفر».
+    """
+    q = normalize(re.sub(r"[^\w\s]", " ", query)).split()
+    toks = [normalize(re.sub(r"[^\w\s]", "", w[2])) for w in words or []]
+    for i in range(len(toks) - len(q) + 1 if q else 0):
+        if all(q[k] in toks[i + k] for k in range(len(q))):
+            return float(words[i][0])
+    return None
 
 
 def moments_from_analysis(a: dict) -> list[dict]:
@@ -467,11 +485,18 @@ class VideoIndex:
     def _db(self):
         db = sqlite3.connect(LOCAL_DB)
         db.executescript(_SCHEMA)
+        for stmt in _MIGRATIONS:
+            try:
+                db.execute(stmt)
+            except sqlite3.OperationalError:
+                pass  # already applied
         db.row_factory = sqlite3.Row
         return db
 
-    async def save(self, video: dict, analysis: dict, kinds: list[str], moments: list[dict]) -> dict:
-        payload = {"video": video, "analysis": analysis, "kinds": kinds, "moments": moments}
+    async def save(self, video: dict, analysis: dict, kinds: list[str], moments: list[dict],
+                   span: Optional[list] = None) -> dict:
+        """Replace `kinds` for the video; with `span` [start, end) only the moments inside it."""
+        payload = {"video": video, "analysis": analysis, "kinds": kinds, "moments": moments, "span": span}
         if self.remote:
             return await self._call("POST", "/internal/index/save", json=payload)
         db = self._db()
@@ -487,32 +512,50 @@ class VideoIndex:
                               data=excluded.data, updated_at=excluded.updated_at""",
                            (video["id"], video.get("title"), video.get("series"), video.get("duration"),
                             video.get("watch_url"), merged.get("summary"), json.dumps(merged, ensure_ascii=False)))
-            db.execute(f"DELETE FROM video_moments WHERE video_id=? AND kind IN ({','.join('?' * len(kinds))})",
-                       (video["id"], *kinds))
-            db.executemany("INSERT INTO video_moments (video_id,t_sec,kind,text,norm) VALUES (?,?,?,?,?)",
-                           [(video["id"], m["t_sec"], m["kind"], m["text"], m["norm"]) for m in moments])
+            if kinds:
+                where = f"video_id=? AND kind IN ({','.join('?' * len(kinds))})"
+                args = [video["id"], *kinds]
+                if span:
+                    where += " AND t_sec >= ? AND t_sec < ?"
+                    args += [int(span[0]), int(span[1])]
+                db.execute(f"DELETE FROM video_moments WHERE {where}", args)
+            db.executemany("INSERT INTO video_moments (video_id,t_sec,kind,text,norm,words) VALUES (?,?,?,?,?,?)",
+                           [(video["id"], m["t_sec"], m["kind"], m["text"], m["norm"],
+                             json.dumps(m["words"], ensure_ascii=False) if m.get("words") else None) for m in moments])
         return {"saved": True, "moments": len(moments)}
 
-    async def get(self, video_id: Optional[int]) -> dict:
+    async def get(self, video_id: Optional[int], words: bool = False) -> dict:
+        """Analysis + moments; with words=True transcript moments carry their word timings."""
         if self.remote:
-            return await self._call("GET", "/internal/index/get", params={"id": video_id or ""})
+            res = await self._call("GET", "/internal/index/get",
+                                   params={"id": video_id or "", **({"words": "1"} if words else {})})
+            for m in res.get("moments", []):
+                if isinstance(m.get("words"), str):
+                    m["words"] = json.loads(m["words"])
+            return res
         db = self._db()
         if not video_id:
             rows = db.execute("""SELECT a.video_id, a.title, a.series, a.updated_at,
+                                 json_extract(a.data, '$.auto_index.status') AS auto_status,
+                                 json_array_length(json_extract(a.data, '$.ad_breaks')) AS ad_breaks,
                                  (SELECT COUNT(*) FROM video_moments m WHERE m.video_id=a.video_id AND m.kind='transcript') AS transcript_segments
                                  FROM video_analysis a ORDER BY a.updated_at DESC LIMIT 200""").fetchall()
             return {"videos": [dict(r) for r in rows]}
         a = db.execute("SELECT * FROM video_analysis WHERE video_id=?", (video_id,)).fetchone()
-        ms = db.execute("SELECT t_sec, kind, text FROM video_moments WHERE video_id=? ORDER BY kind, t_sec",
-                        (video_id,)).fetchall()
-        return {"analysis": dict(a) if a else None, "moments": [dict(m) for m in ms]}
+        cols = "t_sec, kind, text" + (", words" if words else "")
+        ms = [dict(m) for m in db.execute(f"SELECT {cols} FROM video_moments WHERE video_id=? ORDER BY kind, t_sec",
+                                           (video_id,)).fetchall()]
+        for m in ms:
+            if "words" in m:
+                m["words"] = json.loads(m["words"]) if m["words"] else []
+        return {"analysis": dict(a) if a else None, "moments": ms}
 
     async def search(self, query: str, kind: str, limit: int) -> dict:
         q = normalize(query)
         if self.remote:
             return await self._call("GET", "/internal/index/search", params={"q": q, "kind": kind, "limit": limit})
         db = self._db()
-        sql = """SELECT m.video_id, m.t_sec, m.kind, m.text, a.title, a.series, a.watch_url
+        sql = """SELECT m.video_id, m.t_sec, m.kind, m.text, m.words, a.title, a.series, a.watch_url
                  FROM video_moments m LEFT JOIN video_analysis a ON a.video_id=m.video_id
                  WHERE m.norm LIKE ?""" + (" AND m.kind=?" if kind != "all" else "") + " ORDER BY m.video_id, m.t_sec LIMIT ?"
         args = [f"%{q}%"] + ([kind] if kind != "all" else []) + [limit]

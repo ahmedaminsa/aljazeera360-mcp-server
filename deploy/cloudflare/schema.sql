@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS video_moments (
   video_id INTEGER, t_sec INTEGER,
   kind     TEXT,               -- chapter | person | onscreen | topic | keyword | transcript
   text     TEXT,
-  norm     TEXT                -- Arabic-normalised text for search
+  norm     TEXT,               -- Arabic-normalised text for search
+  words    TEXT                -- transcript only: JSON [[start, end, word], ...] (Whisper word timings)
 );
+-- Existing databases: ALTER TABLE video_moments ADD COLUMN words TEXT;
 CREATE INDEX IF NOT EXISTS idx_moments_video ON video_moments (video_id, kind);

@@ -262,8 +262,16 @@ async function handleInternal(request, url, env) {
       return Response.json({ result });
     }
 
+    if (url.pathname === "/internal/clip" && request.method === "POST") {
+      if (!env.CLIPS) return Response.json({ error: "Clip storage (R2) not configured" }, { status: 500 });
+      const name = (url.searchParams.get("name") || "clip.mp4").replace(/[^\w.-]+/g, "-").slice(0, 80);
+      const key = `${crypto.randomUUID()}/${name}`;
+      await env.CLIPS.put(key, request.body, { httpMetadata: { contentType: "video/mp4" } });
+      return Response.json({ url: `${url.origin}/clips/${key}` });
+    }
+
     if (url.pathname === "/internal/index/save" && request.method === "POST") {
-      const { video, analysis, kinds = [], moments = [] } = await request.json();
+      const { video, analysis, kinds = [], moments = [], span = null } = await request.json();
       const id = Number(video?.id);
       if (!id) return Response.json({ error: "video.id required" }, { status: 400 });
       const stmts = [];
@@ -281,13 +289,21 @@ async function handleInternal(request, url, env) {
                video.watch_url ?? null, merged.summary ?? null, JSON.stringify(merged), new Date().toISOString()));
       }
       if (kinds.length) {
+        // With a span, only that time range is replaced (long episodes arrive in parts).
+        const inSpan = Array.isArray(span) ? " AND t_sec >= ? AND t_sec < ?" : "";
         stmts.push(db.prepare(
-          `DELETE FROM video_moments WHERE video_id = ? AND kind IN (${kinds.map(() => "?").join(",")})`
-        ).bind(id, ...kinds));
+          `DELETE FROM video_moments WHERE video_id = ? AND kind IN (${kinds.map(() => "?").join(",")})${inSpan}`
+        ).bind(id, ...kinds, ...(inSpan ? [Math.floor(span[0]), Math.ceil(span[1])] : [])));
       }
-      const ins = db.prepare("INSERT INTO video_moments (video_id, t_sec, kind, text, norm) VALUES (?, ?, ?, ?, ?)");
-      for (const m of moments) {
-        stmts.push(ins.bind(id, Math.round(Number(m.t_sec) || 0), String(m.kind), String(m.text), normalizeText(m.norm || m.text)));
+      // Multi-row inserts: 16 rows × 6 values stays under D1's 100 bound parameters,
+      // and an hour of transcript is ~45 statements instead of ~700.
+      const ROWS = 16;
+      for (let i = 0; i < moments.length; i += ROWS) {
+        const part = moments.slice(i, i + ROWS);
+        stmts.push(db.prepare(
+          `INSERT INTO video_moments (video_id, t_sec, kind, text, norm, words) VALUES ${part.map(() => "(?, ?, ?, ?, ?, ?)").join(", ")}`
+        ).bind(...part.flatMap((m) => [id, Math.round(Number(m.t_sec) || 0), String(m.kind), String(m.text),
+          normalizeText(m.norm || m.text), m.words?.length ? JSON.stringify(m.words) : null])));
       }
       // D1 batches are transactional; keep each under the statement limit.
       for (let i = 0; i < stmts.length; i += 90) await db.batch(stmts.slice(i, i + 90));
@@ -299,13 +315,16 @@ async function handleInternal(request, url, env) {
       if (!id) {
         const { results } = await db.prepare(
           `SELECT a.video_id, a.title, a.series, a.updated_at,
+             json_extract(a.data, '$.auto_index.status') AS auto_status,
+             json_array_length(json_extract(a.data, '$.ad_breaks')) AS ad_breaks,
              (SELECT COUNT(*) FROM video_moments m WHERE m.video_id = a.video_id AND m.kind = 'transcript') AS transcript_segments
            FROM video_analysis a ORDER BY a.updated_at DESC LIMIT 200`).all();
         return Response.json({ videos: results });
       }
       const analysis = await db.prepare("SELECT * FROM video_analysis WHERE video_id = ?").bind(id).first();
+      const cols = url.searchParams.get("words") === "1" ? "t_sec, kind, text, words" : "t_sec, kind, text";
       const { results } = await db.prepare(
-        "SELECT t_sec, kind, text FROM video_moments WHERE video_id = ? ORDER BY kind, t_sec").bind(id).all();
+        `SELECT ${cols} FROM video_moments WHERE video_id = ? ORDER BY kind, t_sec`).bind(id).all();
       return Response.json({ analysis: analysis ?? null, moments: results });
     }
 
@@ -315,7 +334,7 @@ async function handleInternal(request, url, env) {
       const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "40", 10) || 40, 1), 200);
       if (!q) return Response.json({ results: [] });
       const { results } = await db.prepare(
-        `SELECT m.video_id, m.t_sec, m.kind, m.text, a.title, a.series, a.watch_url
+        `SELECT m.video_id, m.t_sec, m.kind, m.text, m.words, a.title, a.series, a.watch_url
          FROM video_moments m LEFT JOIN video_analysis a ON a.video_id = m.video_id
          WHERE m.norm LIKE ?${kind !== "all" ? " AND m.kind = ?" : ""}
          ORDER BY m.video_id, m.t_sec LIMIT ?`
@@ -345,12 +364,142 @@ function authorized(request, url, env) {
   return bearer === token || url.searchParams.get("token") === token;
 }
 
+// ---------------------------------------------------------------------------
+// Clips (R2): made by make_clip, public by unguessable link, deleted after 7 days.
+// ---------------------------------------------------------------------------
+const CLIP_DAYS = 7;
+
+async function serveClip(request, url, env) {
+  if (!env.CLIPS) return new Response("Not found", { status: 404 });
+  const key = decodeURIComponent(url.pathname.slice("/clips/".length));
+  const range = request.headers.get("range");
+  const m = range && range.match(/bytes=(\d*)-(\d*)/);
+  const opts = m ? { range: m[1] ? { offset: Number(m[1]), ...(m[2] ? { length: Number(m[2]) - Number(m[1]) + 1 } : {}) }
+                                   : { suffix: Number(m[2]) } } : {};
+  const obj = await env.CLIPS.get(key, opts);
+  if (!obj) return new Response("Not found", { status: 404 });
+  const headers = new Headers({
+    "content-type": "video/mp4", "accept-ranges": "bytes", "cache-control": "private, max-age=3600",
+    "content-disposition": `inline; filename="${key.split("/").pop()}"`, "x-robots-tag": "noindex",
+  });
+  if (m && obj.range) {
+    const start = obj.range.offset ?? (obj.size - obj.range.suffix);
+    const len = obj.range.length ?? (obj.size - start);
+    headers.set("content-range", `bytes ${start}-${start + len - 1}/${obj.size}`);
+    headers.set("content-length", String(len));
+    return new Response(obj.body, { status: 206, headers });
+  }
+  headers.set("content-length", String(obj.size));
+  return new Response(obj.body, { headers });
+}
+
+async function deleteOldClips(env) {
+  if (!env.CLIPS) return 0;
+  const cutoff = Date.now() - CLIP_DAYS * 86400_000;
+  let cursor, removed = 0;
+  do {
+    const page = await env.CLIPS.list({ cursor, limit: 500 });
+    const old = page.objects.filter((o) => o.uploaded.getTime() < cutoff).map((o) => o.key);
+    if (old.length) { await env.CLIPS.delete(old); removed += old.length; }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return removed;
+}
+
+// ---------------------------------------------------------------------------
+// Team studio: /team/<token>/studio — indexed episodes, transcripts, ad breaks.
+// ---------------------------------------------------------------------------
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const ts = (s) => { s = Math.max(0, Math.floor(Number(s) || 0)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+  return (h ? `${h}:${String(m).padStart(2, "0")}` : String(m).padStart(2, "0")) + ":" + String(x).padStart(2, "0"); };
+const srtTs = (s) => { const ms = Math.round(s * 1000); const p = (n, w = 2) => String(n).padStart(w, "0");
+  return `${p(Math.floor(ms / 3600000))}:${p(Math.floor(ms % 3600000 / 60000))}:${p(Math.floor(ms % 60000 / 1000))},${p(ms % 1000, 3)}`; };
+
+async function studio(request, url, env, base, rest) {
+  const db = env.ANALYTICS_DB;
+  const file = rest.match(/^\/(\d+)(\.srt|-ads\.csv)$/);
+  if (file) {
+    const id = Number(file[1]);
+    if (file[2] === ".srt") {
+      const { results } = await db.prepare(
+        "SELECT t_sec, text, words FROM video_moments WHERE video_id = ? AND kind = 'transcript' ORDER BY t_sec").bind(id).all();
+      const cues = results.map((r, i) => {
+        const w = r.words ? JSON.parse(r.words) : [];
+        const start = w.length ? w[0][0] : r.t_sec;
+        const end = w.length ? w[w.length - 1][1] : (results[i + 1]?.t_sec ?? r.t_sec + 5);
+        return `${i + 1}\n${srtTs(start)} --> ${srtTs(end)}\n${r.text}`;
+      });
+      return new Response(cues.join("\n\n") + "\n", { headers: {
+        "content-type": "application/x-subrip; charset=utf-8", "content-disposition": `attachment; filename="aj360-${id}.srt"` } });
+    }
+    const row = await db.prepare("SELECT data FROM video_analysis WHERE video_id = ?").bind(id).first();
+    const breaks = row?.data ? (JSON.parse(row.data).ad_breaks || []) : [];
+    const csv = ["break,time,seconds,categories,brand_safety",
+      ...breaks.map((b) => `${b.break},${b.at},${b.at_sec},"${(b.categories || []).join(" ")}",${b.brand_safety}`)].join("\n");
+    return new Response("\ufeff" + csv + "\n", { headers: {
+      "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="aj360-${id}-ad-breaks.csv"` } });
+  }
+  const { results } = await db.prepare(
+    `SELECT a.video_id, a.title, a.series, a.duration, a.watch_url, a.updated_at,
+       json_extract(a.data, '$.auto_index.status') AS auto_status,
+       json_extract(a.data, '$.ad_breaks') AS ad_breaks,
+       (SELECT COUNT(*) FROM video_moments m WHERE m.video_id = a.video_id AND m.kind = 'transcript') AS segs
+     FROM video_analysis a ORDER BY a.updated_at DESC LIMIT 150`).all();
+  const status = { done: "✅ مفهرسة", protected: "🔒 محمية DRM", failed: "⚠️ فشلت" };
+  const rows = results.map((r) => {
+    const breaks = r.ad_breaks ? JSON.parse(r.ad_breaks) : [];
+    const chips = breaks.map((b) => `<span class="chip ${b.brand_safety === "sensitive" ? "warn" : ""}" title="${esc((b.categories || []).join("، "))}">${esc(b.at)}</span>`).join("");
+    return `<tr>
+      <td><a href="${esc(r.watch_url)}" target="_blank" rel="noopener">${esc(r.title)}</a><div class="muted">${esc(r.series || "")} · ${esc(r.video_id)}</div></td>
+      <td>${r.duration ? ts(r.duration) : ""}</td>
+      <td>${r.segs ? `${r.segs} سطر · <a href="${base}/studio/${r.video_id}.srt">SRT</a>` : '<span class="muted">—</span>'}</td>
+      <td>${chips || '<span class="muted">—</span>'}${breaks.length ? ` <a href="${base}/studio/${r.video_id}-ads.csv">CSV</a>` : ""}</td>
+      <td>${esc(status[r.auto_status] || (r.segs ? "✅ مفرّغة" : "—"))}<div class="muted">${esc((r.updated_at || "").slice(0, 16).replace("T", " "))}</div></td>
+    </tr>`;
+  }).join("");
+  const html = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>استوديو الجزيرة 360</title>
+<style>
+:root{--bg:#f3f4f6;--card:#fff;--ink:#16181d;--muted:#5e6470;--line:#e3e5e9;--acc:#3ecf6a;--warn:#e5484d}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#171a20;--ink:#eef0f3;--muted:#9aa1ad;--line:#262a33}}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 system-ui,"Segoe UI",Tahoma,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:24px 16px}
+h1{margin:0 0 4px;font-size:24px}.muted{color:var(--muted);font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow-x:auto;margin-top:18px}
+table{width:100%;border-collapse:collapse;min-width:720px}th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:start;vertical-align:top}
+th{font-size:13px;color:var(--muted);font-weight:600}a{color:inherit}
+.chip{display:inline-block;padding:1px 8px;margin:2px;border-radius:99px;background:color-mix(in srgb,var(--acc) 18%,transparent);font:12px ui-monospace,monospace}
+.chip.warn{background:color-mix(in srgb,var(--warn) 18%,transparent)}
+</style></head><body><main>
+<h1>استوديو الجزيرة 360</h1>
+<div class="muted">الحلقات المفهرسة: التفريغ بالتوقيت، ونقاط الإعلانات المقترحة (الأحمر = محتوى حساس للمعلنين). الحلقات الجديدة تُفهرس تلقائيًا كل ساعة.</div>
+<div class="card"><table><thead><tr><th>الحلقة</th><th>المدة</th><th>التفريغ</th><th>نقاط الإعلانات</th><th>الحالة</th></tr></thead>
+<tbody>${rows || '<tr><td colspan="5" class="muted">لا توجد حلقات مفهرسة بعد.</td></tr>'}</tbody></table></div>
+</main></body></html>`;
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex" } });
+}
+
 // Retention promised in the privacy policy (/privacy): 180 days.
 const RETENTION_DAYS = 180;
+const AUTO_INDEX_CRON = "7 * * * *";
 
 export default {
   // Daily cron (wrangler.jsonc "triggers"): delete analytics past retention.
   async scheduled(event, env, ctx) {
+    // Hourly: index the newest episodes (transcript + ad breaks) on the team container.
+    if (event.cron === AUTO_INDEX_CRON) {
+      if (env.AJ360_INTERNAL_TOKEN && env.AJ360_ALLOWED_HOST) {
+        ctx.waitUntil(env.AJ360_TEAM_CONTAINER.getByName("mcp-team").fetch(new Request(
+          `https://${env.AJ360_ALLOWED_HOST}/jobs/auto-index`,
+          { method: "POST", headers: { "x-internal-token": env.AJ360_INTERNAL_TOKEN } }))
+          .then((r) => r.text()).then((t) => console.log("auto-index:", t))
+          .catch((err) => console.error("auto-index failed:", err.message)));
+      }
+      return;
+    }
+    ctx.waitUntil(deleteOldClips(env).then((n) => console.log(`clips: deleted ${n}`))
+      .catch((err) => console.error("clip cleanup failed:", err.message)));
     if (!env.ANALYTICS_DB) return;
     const cutoff = new Date(Date.now() - RETENTION_DAYS * 86400_000).toISOString();
     ctx.waitUntil(
@@ -377,6 +526,7 @@ export default {
     }
 
     if (url.pathname.startsWith("/internal/")) return handleInternal(request, url, env);
+    if (url.pathname.startsWith("/clips/") && request.method === "GET") return serveClip(request, url, env);
 
     // Private team endpoint: /team/<token>/mcp → the full-profile container.
     let isTeam = false;
@@ -386,6 +536,9 @@ export default {
         return Response.json({ error: "Not found" }, { status: 404 });
       }
       isTeam = true;
+      if ((team[2] || "").startsWith("/studio")) {
+        return studio(request, url, env, `/team/${team[1]}`, team[2].slice("/studio".length));
+      }
       const inner = new URL(request.url);
       inner.pathname = team[2] || "/mcp";
       request = new Request(inner, request);
