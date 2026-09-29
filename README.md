@@ -55,7 +55,7 @@ The server ships with two tool profiles:
 | Profile | Tools | For whom | How |
 | :--- | :--- | :--- | :--- |
 | **Core** (default) | 14 tools (discovery + video watching, transcripts & search) | End users asking AI assistants about content | Works out of the box |
-| **Full** | All 33 tools (+ SEO, analytics, listening & transcription) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
+| **Full** | All 36 tools (+ SEO, analytics, listening, ad breaks, social pack & clips) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
 
 On the hosted service, the public URL (`/mcp`) serves the **core** profile. The **full** profile is on a private team URL (`/team/<token>/mcp`) so the heavy analysis tools aren't open to the public or to directory crawlers. For Claude Code in this repo, set `AJ360_MCP_URL` to the team URL to get the SEO tools; without it, `.mcp.json` uses the public URL.
 
@@ -140,6 +140,26 @@ The AI assistant can **see**, **read** and **hear** episodes, and every finding 
 **How it hears.** `listen_to_video` transcribes an episode's own audio as the official player receives it. Most episodes' audio is not encrypted (24 of 25 in a September 2026 sample); episodes with DRM-protected audio are refused and never decrypted. It fetches only the requested time range, up to 60 minutes per call. Measured: a 3.4-minute episode of «مع تميم» in 21 seconds. For protected episodes, `transcribe_audio` takes a link to a file you already have the right to use, such as your archive copy, an editing export, or a file you manage on another platform. The server decodes any format with PyAV (FFmpeg) and sends 30-second chunks to Whisper. Known Whisper hallucinations over music or silence, like «اشتركوا في القناة», are dropped. On a public-domain 1954 speech, 2.5 minutes of audio took 15 seconds.
 
 **Limits.** Frames are small and silent, so speech only appears if it's on screen or transcribed. People are identified only from on-screen name captions or known presenters, never by face.
+
+### Studio: ad breaks, social media and clips (team)
+
+Once an episode is transcribed, the team endpoint turns it into ready work for the ad and social teams.
+
+| Tool | What it does |
+| :--- | :--- |
+| `suggest_ad_breaks` | Mid-roll ad-break points at natural pauses in speech (word timings), scored higher near a scene change or chapter start and spaced apart (default 7 minutes, never in the first 3 minutes or the last minute). Each break has the text before and after it, a first-pass ad category (travel, food, technology, finance…) and a **brand-safety** flag: *sensitive* when war, violence or death is mentioned within a minute. With `advertiser_keywords`, it also lists where each keyword is said and the next break after it, for contextual ads. Returns a CSV cue sheet to enter as ad markers in Vesper. |
+| `get_social_pack` | One call for the social team: quotable lines with in/out times, 30–60 s clip-ready moments, hashtag candidates, key frames, the saved analysis and the transcript, plus the list of deliverables (posts per platform, thread, quote cards, 5 headlines, English summary). |
+| `make_clip` | Cuts up to 3 minutes of an episode into an MP4 with sound (360p–1080p) and returns a download link that lasts 7 days. The cut starts at the keyframe at or before the requested time. DRM-protected episodes are refused. |
+
+**Exact seconds.** Whisper returns a time for every word. They are saved with the transcript, so `search_video_index` gives the exact second a word or phrase is spoken (`exact_sec`).
+
+**Automatic indexing.** Every hour the Worker asks the team container to transcribe the newest episodes of the main channels (2 per run) and compute their ad breaks, so the index stays current without anyone asking. DRM-protected episodes are marked and skipped.
+
+**Studio page.** `/team/<token>/studio` lists the indexed episodes with their transcript (SRT download) and suggested ad breaks (sensitive ones in red, CSV download).
+
+Prompts on the team endpoint: `social_media_pack` and `contextual_ads`.
+
+**Limits.** Categories and brand safety come from keyword lists, a first pass for a person or the assistant to confirm. Ad markers are entered in Vesper by the team; the connector does not write to Vesper.
 
 ### SEO & Metadata Tools (requires `AJ360_ENABLE_SEO_TOOLS=1`)
 

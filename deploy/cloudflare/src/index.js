@@ -245,11 +245,20 @@ function normalizeText(t) {
     .replace(/\s+/g, " ").trim();
 }
 
+// Additive schema changes, applied once per isolate (errors mean already applied).
+const MIGRATIONS = ["ALTER TABLE video_moments ADD COLUMN words TEXT"];
+let migrated = null;
+function migrate(db) {
+  migrated ??= Promise.all(MIGRATIONS.map((sql) => db.prepare(sql).run().catch(() => null)));
+  return migrated;
+}
+
 async function handleInternal(request, url, env) {
   if (!env.AJ360_INTERNAL_TOKEN || request.headers.get("x-internal-token") !== env.AJ360_INTERNAL_TOKEN) {
     return Response.json({ error: "Not found" }, { status: 404 });
   }
   const db = env.ANALYTICS_DB;
+  await migrate(db);
   try {
     if (url.pathname === "/internal/transcribe" && request.method === "POST") {
       if (!env.AI) return Response.json({ error: "Workers AI binding missing" }, { status: 500 });
@@ -417,6 +426,7 @@ const srtTs = (s) => { const ms = Math.round(s * 1000); const p = (n, w = 2) => 
 
 async function studio(request, url, env, base, rest) {
   const db = env.ANALYTICS_DB;
+  await migrate(db);
   const file = rest.match(/^\/(\d+)(\.srt|-ads\.csv)$/);
   if (file) {
     const id = Number(file[1]);

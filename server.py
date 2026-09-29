@@ -4298,6 +4298,29 @@ async def about_resource() -> str:
 # MCP Prompts (Pre-built scenarios for AI assistants)
 # ============================================================================
 
+if SEO_TOOLS_ENABLED:
+    @mcp.prompt()
+    def social_media_pack(video_id: str) -> str:
+        """Promote an episode on social media: posts, quotes, clips (team)."""
+        return f"""Prepare the social media pack for Al Jazeera 360 episode {video_id}.
+1. Call get_social_pack. If it has no transcript, call listen_to_video first, then get_social_pack again.
+2. Write every item in its "deliverables" list in Arabic, using only lines that were actually said,
+   each with its timestamp. Name speakers only when the analysis or on-screen captions identify them.
+3. Cut the two strongest clip_moments with make_clip and include the links.
+4. Finish with the watch link. Flag anything sensitive (brand_safety) before it is posted."""
+
+    @mcp.prompt()
+    def contextual_ads(video_id: str, advertiser_keywords: str = "") -> str:
+        """Plan contextual mid-roll ads for an episode (team)."""
+        return f"""Plan contextual ad breaks for Al Jazeera 360 episode {video_id}.
+1. If the episode has no transcript yet, call listen_to_video (for long episodes, in 60-minute parts).
+2. Call suggest_ad_breaks with advertiser_keywords={advertiser_keywords!r} split into a list.
+3. For each break, read its before/after text, confirm or correct the ad category, and keep
+   brand_safety "sensitive" breaks away from consumer brands.
+4. Return a table (time, category, brand safety, suitable advertisers) and the CSV cue sheet
+   ready to enter as ad markers in Vesper."""
+
+
 @mcp.prompt()
 def recommend_documentary(topic: str) -> str:
     """Recommend a documentary about a specific topic from Al Jazeera 360."""
@@ -4591,7 +4614,7 @@ async def api_health(request: Request):
     return JSONResponse({
         "status": "ok",
         "server": "aljazeera360-mcp",
-        "version": "2.4.0",
+        "version": "2.5.0",
         "transport": _transport_mode,
         "privacy_policy": "/privacy",
         "documentation": "/docs",

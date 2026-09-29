@@ -57,7 +57,9 @@ STOPWORDS = {normalize(w) for w in (
     "و او أو ثم قد كل بعض لكن لكن بين حتى عند بعد قبل هناك هنا اذا إذا أن ان إن كما ايضا أيضا يعني يا اللي ده دي "
     "كده مش عشان جدا شيء فيه فيها منه منها عليه عليها لها له لهم به بها the a an of to in and is are was that this "
     "for it on with as be مرحبا بكم حلقه حلقتنا اليوم برنامج مشاهدينا الكرام سيداتي سادتي نعم طيب الان الآن "
-    "هذه هذا الذي كيف لماذا ماذا متى اين هل".split())}
+    "هذه هذا الذي كيف لماذا ماذا متى اين هل اسمه اسمها ممكن واحد واحده وحده كمان هيك هاي هاد هادا شو كتير كثير "
+    "عم بدو بده بدنا لازم يعني عشان علشان برضه بردو زي مثل حيث التي الذين كانوا يكون تكون صار صارت راح رح قال "
+    "قالت قالوا يقول تقول عندما عندنا عندهم لدينا لديهم شيء اشياء مره كانت اكثر اقل جميع لقد".split())}
 
 
 def _hits(text_norm: str, stems: list[str]) -> list[str]:
@@ -265,9 +267,10 @@ def hashtags(title: str, series: Optional[str], cues: list[dict], limit: int = 8
     for c in cues:
         for w in re.findall(r"[\w]+", c["text"]):
             nw = normalize(w)
-            if len(nw) >= 4 and nw not in STOPWORDS and not nw.isdigit():
+            if len(nw) >= 5 and nw not in STOPWORDS and not nw.isdigit():
                 words[w] += 1
-    tags += [tag(w) for w, _ in words.most_common(limit * 2)]
+    # Repeated content words only: a name or topic comes up more than once.
+    tags += [tag(w) for w, n in words.most_common(limit * 2) if n >= 2]
     seen, out = set(), []
     for t in tags:
         if t not in seen and len(t) > 2:
