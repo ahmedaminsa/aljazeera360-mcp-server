@@ -204,3 +204,85 @@ def test_diagnostics_tool_opens_the_view_and_accepts_reports():
     assert opened["diagnostics"] is True
     ack = json.loads(asyncio.run(server.run_diagnostics(report="player vid=1;drm=no;frame=skipped")))
     assert ack == {"received": True}
+
+
+# ---------------------------------------------------------------------------
+# Video understanding (video_intel.py) — offline
+# ---------------------------------------------------------------------------
+
+import io as _io  # noqa: E402
+import struct as _struct  # noqa: E402
+import wave as _wave  # noqa: E402
+
+import video_intel  # noqa: E402
+
+
+def _fake_bif(n=6, interval_ms=15000):
+    from PIL import Image as PILImage
+    jpegs = []
+    for i in range(n):
+        b = _io.BytesIO()
+        PILImage.new("RGB", (320, 180), (i * 40, 0, 0)).save(b, format="JPEG")
+        jpegs.append(b.getvalue())
+    header = video_intel.BIF_MAGIC + _struct.pack("<III", 0, n, interval_ms) + b"\0" * 44
+    offset = 64 + (n + 1) * 8
+    index, offs = b"", offset
+    for i, j in enumerate(jpegs):
+        index += _struct.pack("<II", i, offs)
+        offs += len(j)
+    index += _struct.pack("<II", 0xFFFFFFFF, offs)
+    return header + index + b"".join(jpegs)
+
+
+def test_bif_parsing_and_contact_sheet():
+    interval, frames = video_intel.parse_bif(_fake_bif())
+    assert interval == 15 and [t for t, _ in frames] == [0, 15, 30, 45, 60, 75]
+    picked = video_intel.pick_frames(frames, 30, 60, 10)
+    assert [t for t, _ in picked] == [30, 45, 60]
+    sheet = video_intel.contact_sheet(picked)
+    assert sheet[:2] == b"\xff\xd8"  # JPEG
+
+
+def test_arabic_normalisation_and_timestamps():
+    assert video_intel.normalize("الذكاءُ الإصطناعيّ") == video_intel.normalize("الذكاء الاصطناعي")
+    assert video_intel.parse_ts("14:30") == 870 and video_intel.parse_ts("1:02:03") == 3723
+    assert video_intel.fmt_ts(870) == "14:30"
+
+
+def test_whisper_hallucinations_are_filtered():
+    assert video_intel.is_hallucination("اشتركوا في القناة")
+    assert video_intel.is_hallucination("شكراً للمشاهدة!")
+    assert not video_intel.is_hallucination("ايوه الأحرار")
+
+
+def test_local_index_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(video_intel, "LOCAL_DB", str(tmp_path / "idx.db"))
+    idx = video_intel.VideoIndex()
+    idx.remote = False
+    analysis = {"summary": "s", "chapters": [{"start": "04:30", "title": "تقرير"}],
+                "people": [{"name": "نيت سواريس", "role": "باحث", "first_seen": "21:15"}],
+                "topics": ["الذكاء الاصطناعي"]}
+    moments = video_intel.moments_from_analysis(analysis)
+    video = {"id": 7, "title": "t", "series": None, "duration": 100, "watch_url": "u"}
+    asyncio.run(idx.save(video, analysis, ["chapter", "person", "topic"], moments))
+    found = asyncio.run(idx.search("سواريس", "person", 10))["results"]
+    assert found and found[0]["t_sec"] == 1275
+    assert asyncio.run(idx.get(None))["videos"][0]["video_id"] == 7
+
+
+def test_audio_is_decoded_into_timed_chunks(tmp_path):
+    path = tmp_path / "a.wav"
+    with _wave.open(str(path), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(44100)
+        w.writeframes(b"\0\0\0\0" * 44100 * 65)
+    chunks = video_intel.decode_to_chunks(str(path), 0, None)
+    assert [o for o, _ in chunks] == [0, 30, 60]
+    assert video_intel.decode_to_chunks(str(path), 30, 60)[0][0] == 30
+
+
+def test_video_tools_are_team_only():
+    public = set(server.mcp._tool_manager._tools)
+    video = {"watch_video", "save_video_analysis", "transcribe_audio", "search_video_index", "get_video_analysis"}
+    assert not (video & public) or os.environ.get("AJ360_ENABLE_SEO_TOOLS")

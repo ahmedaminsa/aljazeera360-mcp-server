@@ -18,6 +18,7 @@ Discovered & Tested Endpoints:
 - GET search.dce-prod.dicelaboratory.com/search — Full-text search
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -3520,6 +3521,240 @@ async def generate_series_schema(series_id: int) -> str:
 
 
 # ============================================================================
+# Video understanding: see, read, hear, remember (team profile)
+# ============================================================================
+# See video_intel.py for how each part works and what it deliberately does not
+# touch (the DRM-protected stream).
+
+import video_intel  # noqa: E402
+from mcp.server.fastmcp import Image as MCPImage  # noqa: E402
+
+
+async def _video_meta(video_id: int) -> dict:
+    v = await client.get_vod_details(video_id)
+    ep = v.get("episodeInformation") or {}
+    return {
+        "id": v.get("id") or video_id,
+        "title": v.get("title", ""),
+        "series": (ep.get("seriesInformation") or {}).get("title"),
+        "episode_number": ep.get("episodeNumber"),
+        "duration": v.get("duration"),
+        "description": v.get("description", ""),
+        "watch_url": f"{PLATFORM_URL}/video/{v.get('id') or video_id}",
+        "preview_url": v.get("thumbnailsPreview"),
+    }
+
+
+@seo_tool(annotations=ToolAnnotations(title="Watch Video (مشاهدة الفيديو)", readOnlyHint=True),
+          structured_output=False)
+@track_request("watch_video")
+async def watch_video(video_id: int, start_minute: float = 0, end_minute: Optional[float] = None,
+                      max_frames: int = 24) -> list:
+    """
+    Look at an Al Jazeera 360 episode: returns timestamped frames (one every ~15 s is
+    available) as images, so you can see scenes, people and read on-screen text such as
+    guest names and titles, news tickers and quotes. Use it to describe an episode, find
+    who appears or when something is shown, or to build chapters and metadata.
+    For long episodes, look at the whole range first, then zoom into a range.
+    Afterwards, save_video_analysis stores what you found so it becomes searchable.
+
+    مشاهدة حلقة من الجزيرة 360: صور من الحلقة بتوقيتها لقراءة النصوص على الشاشة ومعرفة الضيوف والمشاهد.
+
+    Args:
+        video_id: Video ID (from search_videos, get_season_episodes, ...)
+        start_minute: Start of the range, in minutes (default 0)
+        end_minute: End of the range, in minutes (default: end of the episode)
+        max_frames: Frames to return, 4-36 (default 24; 12 per image)
+    """
+    max_frames = _bound(max_frames, 4, 36, 24)
+    try:
+        meta = await _video_meta(video_id)
+        if not meta.get("preview_url"):
+            return [json.dumps({"error": "This video has no preview frames.", "watch_url": meta["watch_url"]}, ensure_ascii=False)]
+        interval, frames = video_intel.parse_bif(await video_intel.fetch_bif(meta["preview_url"]))
+        start = int(max(0.0, float(start_minute or 0)) * 60)
+        end = int(float(end_minute) * 60) if end_minute is not None else None
+        chosen = video_intel.pick_frames(frames, start, end, max_frames)
+        if not chosen:
+            return [json.dumps({"error": "No frames in that range.", "duration_seconds": meta["duration"]}, ensure_ascii=False)]
+        sheets = [chosen[i:i + 12] for i in range(0, len(chosen), 12)]
+        header = {
+            "video_id": meta["id"], "title": meta["title"], "series": meta["series"],
+            "episode_number": meta["episode_number"], "duration": format_duration(meta["duration"]),
+            "platform_description": meta["description"], "watch_url": meta["watch_url"],
+            "range": f"{video_intel.fmt_ts(chosen[0][0])} – {video_intel.fmt_ts(chosen[-1][0])}",
+            "frames_shown": len(chosen), "frames_available": len(frames),
+            "seconds_between_available_frames": interval,
+            "images": f"{len(sheets)} contact sheet(s); each tile is labelled with its timestamp",
+            "limits": "Preview frames are 320x180 and silent: what is said is not visible unless it "
+                      "appears on screen. Use transcribe_audio with a file you are entitled to for speech.",
+        }
+        loop = asyncio.get_running_loop()
+        images = [MCPImage(data=await loop.run_in_executor(None, video_intel.contact_sheet, sheet), format="jpeg")
+                  for sheet in sheets]
+        return [json.dumps(header, ensure_ascii=False, indent=2), *images]
+    except Exception as e:
+        logger.error(f"watch_video {video_id}: {e}")
+        return [json.dumps({"error": str(e)}, ensure_ascii=False)]
+
+
+@seo_tool(annotations=ToolAnnotations(title="Save Video Analysis (حفظ تحليل الفيديو)",
+                                      readOnlyHint=False, destructiveHint=False, idempotentHint=True))
+@track_request("save_video_analysis")
+async def save_video_analysis(video_id: int, summary: str = "", chapters: Optional[list[dict]] = None,
+                              people: Optional[list[dict]] = None, topics: Optional[list[str]] = None,
+                              keywords: Optional[list[str]] = None,
+                              on_screen_text: Optional[list[dict]] = None) -> str:
+    """
+    Store what was found in an episode (usually after watch_video) in the searchable
+    video index. Saving again replaces the earlier analysis of that episode.
+    Only record what was actually seen or heard; leave out anything uncertain.
+
+    حفظ تحليل الحلقة (الملخص والفصول والضيوف والمواضيع) في فهرس قابل للبحث.
+
+    Args:
+        video_id: Video ID
+        summary: 2-4 sentence summary of the episode
+        chapters: [{"start": "04:30", "title": "..."}]
+        people: [{"name": "...", "role": "title shown on screen", "first_seen": "06:30"}]
+            Only people identified by on-screen name captions or known presenters.
+        topics: Main topics, e.g. ["عسكرة الذكاء الاصطناعي", "المسيّرات"]
+        keywords: Search keywords for SEO/metadata
+        on_screen_text: Notable captions or tickers: [{"at": "22:30", "text": "..."}]
+    """
+    try:
+        meta = await _video_meta(video_id)
+        analysis = {"summary": summary or None, "chapters": chapters or [], "people": people or [],
+                    "topics": topics or [], "keywords": keywords or [], "on_screen_text": on_screen_text or []}
+        moments = video_intel.moments_from_analysis(analysis)
+        res = await video_intel.index.save(
+            {k: meta[k] for k in ("id", "title", "series", "duration", "watch_url")}, analysis,
+            ["chapter", "person", "onscreen", "topic", "keyword"], moments)
+        return json.dumps({"saved": bool(res.get("saved")), "video_id": meta["id"], "title": meta["title"],
+                           "indexed_moments": len(moments)}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"save_video_analysis {video_id}: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@seo_tool(annotations=ToolAnnotations(title="Transcribe Audio (تفريغ الصوت)",
+                                      readOnlyHint=False, destructiveHint=False, openWorldHint=True))
+@track_request("transcribe_audio")
+async def transcribe_audio(video_id: int, audio_url: str, language: str = "ar",
+                           start_minute: float = 0, end_minute: Optional[float] = None) -> str:
+    """
+    Transcribe what is said in an episode, with timestamps, from an audio or video FILE
+    link that you are entitled to use (for example the episode file from your own archive
+    or editing system, or a file you manage on another platform). Any common format works
+    (mp3, m4a, wav, mp4, mov...). The platform's own protected stream is not used.
+    The transcript is saved to the video index, so search_video_index can find moments
+    by what was said. Speech recognition: Whisper large-v3-turbo.
+
+    تفريغ كلام الحلقة نصًا بالتوقيت من رابط ملف صوت أو فيديو مسموح لك باستخدامه.
+
+    Args:
+        video_id: The Al Jazeera 360 video this audio belongs to
+        audio_url: Direct http(s) link to the audio/video file
+        language: Spoken language code (default "ar")
+        start_minute: Start of the part to transcribe (default 0)
+        end_minute: End of the part to transcribe (default: whole file, max 3 hours)
+    """
+    path = None
+    if not video_intel.transcription_available():
+        return json.dumps({"error": "Transcription is not configured on this server (needs the hosted "
+                                    "index or CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_AI_TOKEN)."}, ensure_ascii=False)
+    try:
+        meta = await _video_meta(video_id)
+        path = await video_intel.download_media(audio_url)
+        start = int(max(0.0, float(start_minute or 0)) * 60)
+        end = int(float(end_minute) * 60) if end_minute is not None else None
+        chunks = await asyncio.to_thread(video_intel.decode_to_chunks, path, start, end)
+        if not chunks:
+            return json.dumps({"error": "No audio found in that range."}, ensure_ascii=False)
+        segments = await video_intel.transcribe_chunks(chunks, language or "ar")
+        failed = sum(1 for s in segments if s.get("failed"))
+        if failed == len(segments):
+            return json.dumps({"error": "Speech recognition failed for every part of the file."}, ensure_ascii=False)
+        moments = [{"t_sec": int(s["start"]), "kind": "transcript", "text": s["text"],
+                    "norm": video_intel.normalize(s["text"])} for s in segments if not s.get("failed")]
+        await video_intel.index.save({k: meta[k] for k in ("id", "title", "series", "duration", "watch_url")},
+                                     {"transcribed_range": [start, chunks[-1][0] + video_intel.CHUNK_SECONDS]},
+                                     ["transcript"], moments)
+        lines = [f"[{video_intel.fmt_ts(s['start'])}] {s['text']}" for s in segments]
+        text = "\n".join(lines)
+        return json.dumps({
+            "video_id": meta["id"], "title": meta["title"],
+            "transcribed": f"{video_intel.fmt_ts(start)} – {video_intel.fmt_ts(chunks[-1][0] + video_intel.CHUNK_SECONDS)}",
+            "segments": len(moments), "failed_parts": failed, "saved_to_index": True,
+            "transcript": text[:20000] + ("\n… (truncated here; the full transcript is in the index)" if len(text) > 20000 else ""),
+        }, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"transcribe_audio {video_id}: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    finally:
+        if path and os.path.exists(path):
+            os.remove(path)
+
+
+@seo_tool(annotations=ToolAnnotations(title="Search Video Index (البحث داخل الحلقات)", readOnlyHint=True))
+@track_request("search_video_index")
+async def search_video_index(query: str, kind: str = "all", limit: int = 40) -> str:
+    """
+    Search inside analysed episodes: who appeared, when a topic came up, what was said or
+    shown on screen. Returns episodes with the timestamps of each match. Covers episodes
+    saved with save_video_analysis or transcribed with transcribe_audio.
+
+    البحث داخل الحلقات المحللة: مين ظهر، وإمتى اتكلموا عن موضوع، وإيه اللي اتقال أو اتكتب.
+
+    Args:
+        query: Name, topic or phrase (Arabic or English)
+        kind: all | person | chapter | topic | keyword | onscreen | transcript
+        limit: Max matches (default 40)
+    """
+    kind = kind if kind in ("all", "person", "chapter", "topic", "keyword", "onscreen", "transcript") else "all"
+    limit = _bound(limit, 1, 200, 40)
+    try:
+        res = await video_intel.index.search(query, kind, limit)
+        grouped: dict = {}
+        for r in res.get("results", []):
+            g = grouped.setdefault(r["video_id"], {"video_id": r["video_id"], "title": r.get("title"),
+                                                   "series": r.get("series"), "watch_url": r.get("watch_url"),
+                                                   "matches": []})
+            g["matches"].append({"at": video_intel.fmt_ts(r["t_sec"]) if r["kind"] not in ("topic", "keyword") else None,
+                                 "kind": r["kind"], "text": r["text"]})
+        return json.dumps({"query": query, "kind": kind, "episodes": list(grouped.values()),
+                           "total_matches": len(res.get("results", []))}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"search_video_index: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@seo_tool(annotations=ToolAnnotations(title="Get Video Analysis (تحليل الحلقة المحفوظ)", readOnlyHint=True))
+@track_request("get_video_analysis")
+async def get_video_analysis(video_id: Optional[int] = None) -> str:
+    """
+    Read the saved analysis and transcript of an episode, or list all analysed episodes
+    when no video_id is given. Useful for writing descriptions, tags and SEO metadata.
+
+    عرض التحليل والتفريغ المحفوظين لحلقة، أو قائمة كل الحلقات المحللة.
+
+    Args:
+        video_id: Video ID (omit to list analysed episodes)
+    """
+    try:
+        res = await video_intel.index.get(video_id)
+        if video_id and res.get("analysis") and isinstance(res["analysis"].get("data"), str):
+            res["analysis"]["data"] = json.loads(res["analysis"]["data"])
+        if video_id:
+            for m in res.get("moments", []):
+                m["at"] = video_intel.fmt_ts(m.pop("t_sec", 0))
+        return json.dumps(res, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"get_video_analysis: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# ============================================================================
 # MCP Resources
 # ============================================================================
 
@@ -3642,19 +3877,22 @@ PRIVACY_HTML = """<!DOCTYPE html>
     </ul>
     <p><strong>IP addresses are not stored.</strong> To protect the service, the number of requests per conversation (or, without one, per network range) is counted for a minute in Cloudflare's rate limiter, then discarded. Please do not type personal information into search requests, since search terms are logged as written.</p>
 
-    <h2>3. Where it is stored and for how long</h2>
+    <h2>3. Video analysis (team tools only)</h2>
+    <p>The private team tools can store analyses of public Al Jazeera 360 episodes (summaries, chapters, names shown on screen, topics) and transcripts of audio files that team members choose to submit. Audio submitted for transcription is sent to Cloudflare Workers AI (Whisper) and is not kept after transcription. People are identified only from names shown on screen, never by facial recognition.</p>
+
+    <h2>4. Where it is stored and for how long</h2>
     <p>Analytics are stored in a Cloudflare D1 database operated by the maintainers. Records older than 180 days are deleted automatically every day. The data is used only to measure usage and improve the service, and is never sold or shared with third parties or advertising services. Only aggregate figures (for example "most searched programmes") may be shared publicly or with Al Jazeera 360 teams.</p>
 
-    <h2>4. Service providers</h2>
+    <h2>5. Service providers</h2>
     <p>The server runs on Cloudflare (hosting and the analytics database) and requests catalog data from Al Jazeera 360's platform provider. Watching a video opens the official Al Jazeera 360 website or player, which has <a href="https://www.aljazeera360.com">its own privacy policy</a>.</p>
 
-    <h2>5. Credentials</h2>
+    <h2>6. Credentials</h2>
     <p>The hosted service uses a platform key held as a server secret. Users never provide credentials to it. If you self-host the open-source server with your own tokens, they stay in your environment variables and are sent only to Al Jazeera 360's platform.</p>
 
-    <h2>6. Contact</h2>
+    <h2>7. Contact</h2>
     <p>For questions, or to ask for data to be deleted, open an issue in the public <a href="https://github.com/ahmedaminsa/aljazeera360-mcp-server/issues">GitHub repository</a>.</p>
 
-    <h2>7. Changes to this policy</h2>
+    <h2>8. Changes to this policy</h2>
     <p>Changes are published on this page and in the GitHub repository, with the date above updated.</p>
 
     <footer>
@@ -3830,7 +4068,7 @@ async def api_health(request: Request):
     return JSONResponse({
         "status": "ok",
         "server": "aljazeera360-mcp",
-        "version": "2.1.1",
+        "version": "2.2.0",
         "transport": _transport_mode,
         "privacy_policy": "/privacy",
         "documentation": "/docs",

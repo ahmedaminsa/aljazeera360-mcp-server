@@ -27,6 +27,10 @@ export class AJ360Container extends Container {
       AJ360_REFRESH_TOKEN: env.AJ360_REFRESH_TOKEN ?? "",
       AJ360_DASHBOARD_TOKEN: env.AJ360_DASHBOARD_TOKEN ?? "",
       AJ360_ENABLE_SEO_TOOLS: this.seoTools ? "1" : "",
+      // Video index + transcription live in the Worker (D1 + Workers AI);
+      // the container reaches them over /internal/* with a shared secret.
+      AJ360_INDEX_URL: env.AJ360_ALLOWED_HOST ? `https://${env.AJ360_ALLOWED_HOST}` : "",
+      AJ360_INTERNAL_TOKEN: env.AJ360_INTERNAL_TOKEN ?? "",
     };
   }
 
@@ -225,6 +229,105 @@ async function usageReport(env, url) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Video index (D1) and speech-to-text (Workers AI) for video_intel.py.
+// Reached only by the containers, with the AJ360_INTERNAL_TOKEN secret.
+// ---------------------------------------------------------------------------
+
+const WHISPER_MODEL = "@cf/openai/whisper-large-v3-turbo";
+
+/** Same rules as video_intel.normalize() in Python. */
+function normalizeText(t) {
+  return String(t || "")
+    .replace(/[\u064B-\u0652\u0670\u0640]/g, "")
+    .toLowerCase()
+    .replace(/[أإآٱ]/g, "ا").replace(/ى/g, "ي").replace(/ة/g, "ه")
+    .replace(/\s+/g, " ").trim();
+}
+
+async function handleInternal(request, url, env) {
+  if (!env.AJ360_INTERNAL_TOKEN || request.headers.get("x-internal-token") !== env.AJ360_INTERNAL_TOKEN) {
+    return Response.json({ error: "Not found" }, { status: 404 });
+  }
+  const db = env.ANALYTICS_DB;
+  try {
+    if (url.pathname === "/internal/transcribe" && request.method === "POST") {
+      if (!env.AI) return Response.json({ error: "Workers AI binding missing" }, { status: 500 });
+      const body = await request.json();
+      const result = await env.AI.run(WHISPER_MODEL, {
+        audio: body.audio,
+        language: body.language || "ar",
+        vad_filter: body.vad_filter !== false,
+      });
+      return Response.json({ result });
+    }
+
+    if (url.pathname === "/internal/index/save" && request.method === "POST") {
+      const { video, analysis, kinds = [], moments = [] } = await request.json();
+      const id = Number(video?.id);
+      if (!id) return Response.json({ error: "video.id required" }, { status: 400 });
+      const stmts = [];
+      if (analysis) {
+        const old = await db.prepare("SELECT data FROM video_analysis WHERE video_id = ?").bind(id).first();
+        const merged = { ...(old?.data ? JSON.parse(old.data) : {}), ...analysis };
+        stmts.push(db.prepare(
+          `INSERT INTO video_analysis (video_id, title, series, duration, watch_url, summary, data, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(video_id) DO UPDATE SET title = excluded.title, series = excluded.series,
+             duration = excluded.duration, watch_url = excluded.watch_url,
+             summary = COALESCE(excluded.summary, video_analysis.summary),
+             data = excluded.data, updated_at = excluded.updated_at`
+        ).bind(id, video.title ?? null, video.series ?? null, video.duration ?? null,
+               video.watch_url ?? null, merged.summary ?? null, JSON.stringify(merged), new Date().toISOString()));
+      }
+      if (kinds.length) {
+        stmts.push(db.prepare(
+          `DELETE FROM video_moments WHERE video_id = ? AND kind IN (${kinds.map(() => "?").join(",")})`
+        ).bind(id, ...kinds));
+      }
+      const ins = db.prepare("INSERT INTO video_moments (video_id, t_sec, kind, text, norm) VALUES (?, ?, ?, ?, ?)");
+      for (const m of moments) {
+        stmts.push(ins.bind(id, Math.round(Number(m.t_sec) || 0), String(m.kind), String(m.text), normalizeText(m.norm || m.text)));
+      }
+      // D1 batches are transactional; keep each under the statement limit.
+      for (let i = 0; i < stmts.length; i += 90) await db.batch(stmts.slice(i, i + 90));
+      return Response.json({ saved: true, moments: moments.length });
+    }
+
+    if (url.pathname === "/internal/index/get") {
+      const id = Number(url.searchParams.get("id")) || 0;
+      if (!id) {
+        const { results } = await db.prepare(
+          `SELECT a.video_id, a.title, a.series, a.updated_at,
+             (SELECT COUNT(*) FROM video_moments m WHERE m.video_id = a.video_id AND m.kind = 'transcript') AS transcript_segments
+           FROM video_analysis a ORDER BY a.updated_at DESC LIMIT 200`).all();
+        return Response.json({ videos: results });
+      }
+      const analysis = await db.prepare("SELECT * FROM video_analysis WHERE video_id = ?").bind(id).first();
+      const { results } = await db.prepare(
+        "SELECT t_sec, kind, text FROM video_moments WHERE video_id = ? ORDER BY kind, t_sec").bind(id).all();
+      return Response.json({ analysis: analysis ?? null, moments: results });
+    }
+
+    if (url.pathname === "/internal/index/search") {
+      const q = normalizeText(url.searchParams.get("q") || "");
+      const kind = url.searchParams.get("kind") || "all";
+      const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "40", 10) || 40, 1), 200);
+      if (!q) return Response.json({ results: [] });
+      const { results } = await db.prepare(
+        `SELECT m.video_id, m.t_sec, m.kind, m.text, a.title, a.series, a.watch_url
+         FROM video_moments m LEFT JOIN video_analysis a ON a.video_id = m.video_id
+         WHERE m.norm LIKE ?${kind !== "all" ? " AND m.kind = ?" : ""}
+         ORDER BY m.video_id, m.t_sec LIMIT ?`
+      ).bind(`%${q}%`, ...(kind !== "all" ? [kind] : []), limit).all();
+      return Response.json({ results });
+    }
+    return Response.json({ error: "Not found" }, { status: 404 });
+  } catch (err) {
+    return Response.json({ error: err.message }, { status: 500 });
+  }
+}
+
 function isInitialize(bodyText) {
   try {
     const parsed = JSON.parse(bodyText);
@@ -272,6 +375,8 @@ export default {
         return Response.json({ error: err.message }, { status: 500 });
       }
     }
+
+    if (url.pathname.startsWith("/internal/")) return handleInternal(request, url, env);
 
     // Private team endpoint: /team/<token>/mcp → the full-profile container.
     let isTeam = false;

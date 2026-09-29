@@ -55,7 +55,7 @@ The server ships with two tool profiles:
 | Profile | Tools | For whom | How |
 | :--- | :--- | :--- | :--- |
 | **Core** (default) | 10 discovery tools | End users asking AI assistants about content | Works out of the box |
-| **Full** | All 26 tools (+ SEO & analytics) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
+| **Full** | All 31 tools (+ SEO, analytics & video understanding) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
 
 On the hosted service, the public URL (`/mcp`) serves the **core** profile. The **full** profile is on a private team URL (`/team/<token>/mcp`) so the heavy analysis tools aren't open to the public or to directory crawlers. For Claude Code in this repo, set `AJ360_MCP_URL` to the team URL to get the SEO tools; without it, `.mcp.json` uses the public URL.
 
@@ -116,6 +116,24 @@ Clients without MCP Apps support ignore the view and get the same JSON as before
 - Safe by design: the view runs in the host's sandbox, may load only the platform's image and font hosts, and embeds only aljazeera360.com.
 - Backwards compatible: AI apps without UI support get the same JSON as before, and `AJ360_ENABLE_UI=0` turns the view off.
 - No build step: the view is one self-contained HTML file inside `mcp_apps.py`.
+
+### Video understanding (requires `AJ360_ENABLE_SEO_TOOLS=1`; team URL on the hosted service)
+
+The AI assistant can **see**, **read** and **hear** episodes, and every finding goes into a searchable index.
+
+| Tool | What it does |
+| :--- | :--- |
+| `watch_video` | Returns timestamped frames of an episode as images, so the assistant looks at it itself: scenes, presenters and guests, on-screen text such as name captions, tickers and quotes. |
+| `save_video_analysis` | Stores what was found: summary, chapters, people (from on-screen name captions), topics, keywords and on-screen text. |
+| `transcribe_audio` | Transcribes speech with timestamps from an audio or video **file link you are entitled to use**, with Whisper large-v3-turbo on Cloudflare Workers AI. |
+| `search_video_index` | Searches every analysed episode: who appeared, when a topic came up, what was said or shown. Arabic spelling variants match. |
+| `get_video_analysis` | Reads the saved analysis and transcript of an episode, or lists analysed episodes. |
+
+**How it sees.** Every episode has a public preview file: the thumbnails the player shows while you scrub, one frame every ~15 seconds at 320×180. It is not DRM-protected, and on-screen text is readable. The assistant's own model does the looking, so no extra vision API key is needed.
+
+**How it hears.** The platform's audio is DRM-protected and is never touched. `transcribe_audio` takes a link to a file you already have the right to use, such as your archive copy, an editing export, or a file you manage on another platform. The server decodes any format with PyAV (FFmpeg) and sends 30-second chunks to Whisper. Known Whisper hallucinations over music or silence, like «اشتركوا في القناة», are dropped. On a public-domain 1954 speech, 2.5 minutes of audio took 15 seconds.
+
+**Limits.** Frames are small and silent, so speech only appears if it's on screen or transcribed. People are identified only from on-screen name captions or known presenters, never by face.
 
 ### SEO & Metadata Tools (requires `AJ360_ENABLE_SEO_TOOLS=1`)
 

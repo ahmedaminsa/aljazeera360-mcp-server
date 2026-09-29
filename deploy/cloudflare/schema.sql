@@ -24,3 +24,20 @@ CREATE INDEX IF NOT EXISTS idx_events_ts      ON events (ts);
 CREATE INDEX IF NOT EXISTS idx_events_session ON events (session_id);
 CREATE INDEX IF NOT EXISTS idx_events_tool    ON events (tool);
 CREATE INDEX IF NOT EXISTS idx_events_kind    ON events (kind, ts);
+
+-- Video understanding index (video_intel.py via the Worker's /internal/* API).
+CREATE TABLE IF NOT EXISTS video_analysis (
+  video_id   INTEGER PRIMARY KEY,
+  title      TEXT, series TEXT, duration INTEGER, watch_url TEXT,
+  summary    TEXT,
+  data       TEXT,             -- JSON: chapters, people, topics, keywords, on_screen_text, transcribed_range
+  updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS video_moments (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  video_id INTEGER, t_sec INTEGER,
+  kind     TEXT,               -- chapter | person | onscreen | topic | keyword | transcript
+  text     TEXT,
+  norm     TEXT                -- Arabic-normalised text for search
+);
+CREATE INDEX IF NOT EXISTS idx_moments_video ON video_moments (video_id, kind);
