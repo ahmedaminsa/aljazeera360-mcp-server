@@ -31,6 +31,10 @@ export class AJ360Container extends Container {
       // the container reaches them over /internal/* with a shared secret.
       AJ360_INDEX_URL: env.AJ360_ALLOWED_HOST ? `https://${env.AJ360_ALLOWED_HOST}` : "",
       AJ360_INTERNAL_TOKEN: env.AJ360_INTERNAL_TOKEN ?? "",
+      // Team only: base of the studio export links (full transcript files), so the
+      // tools can hand out a download link instead of pasting the text into chat.
+      AJ360_STUDIO_URL: this.seoTools && env.AJ360_TEAM_TOKEN && env.AJ360_ALLOWED_HOST
+        ? `https://${env.AJ360_ALLOWED_HOST}/team/${env.AJ360_TEAM_TOKEN}/studio` : "",
     };
   }
 
@@ -427,20 +431,30 @@ const srtTs = (s) => { const ms = Math.round(s * 1000); const p = (n, w = 2) => 
 async function studio(request, url, env, base, rest) {
   const db = env.ANALYTICS_DB;
   await migrate(db);
-  const file = rest.match(/^\/(\d+)(\.srt|-ads\.csv)$/);
+  const file = rest.match(/^\/(\d+)(\.srt|\.vtt|\.txt|-ads\.csv)$/);
   if (file) {
     const id = Number(file[1]);
-    if (file[2] === ".srt") {
+    if (file[2] !== "-ads.csv") {
       const { results } = await db.prepare(
         "SELECT t_sec, text, words FROM video_moments WHERE video_id = ? AND kind = 'transcript' ORDER BY t_sec").bind(id).all();
+      if (!results.length) return new Response("No saved transcript for this episode.", { status: 404 });
+      const row = await db.prepare("SELECT title FROM video_analysis WHERE video_id = ?").bind(id).first();
       const cues = results.map((r, i) => {
         const w = r.words ? JSON.parse(r.words) : [];
-        const start = w.length ? w[0][0] : r.t_sec;
-        const end = w.length ? w[w.length - 1][1] : (results[i + 1]?.t_sec ?? r.t_sec + 5);
-        return `${i + 1}\n${srtTs(start)} --> ${srtTs(end)}\n${r.text}`;
+        return { start: w.length ? w[0][0] : r.t_sec,
+                 end: w.length ? w[w.length - 1][1] : (results[i + 1]?.t_sec ?? r.t_sec + 5), text: r.text };
       });
-      return new Response(cues.join("\n\n") + "\n", { headers: {
-        "content-type": "application/x-subrip; charset=utf-8", "content-disposition": `attachment; filename="aj360-${id}.srt"` } });
+      const kind = file[2].slice(1);
+      const body = kind === "txt"
+        ? `${row?.title ?? ""}\n\n` + cues.map((c) => `[${ts(c.start)}] ${c.text}`).join("\n")
+        : kind === "vtt"
+          ? "WEBVTT\n\n" + cues.map((c) => `${srtTs(c.start).replace(",", ".")} --> ${srtTs(c.end).replace(",", ".")}\n${c.text}`).join("\n\n")
+          : cues.map((c, i) => `${i + 1}\n${srtTs(c.start)} --> ${srtTs(c.end)}\n${c.text}`).join("\n\n");
+      const type = { srt: "application/x-subrip", vtt: "text/vtt", txt: "text/plain" }[kind];
+      const disposition = url.searchParams.get("view") ? "inline" : `attachment; filename="aj360-${id}.${kind}"`;
+      return new Response(body + "\n", { headers: {
+        "content-type": `${type}; charset=utf-8`, "content-disposition": disposition,
+        "cache-control": "no-store", "x-robots-tag": "noindex" } });
     }
     const row = await db.prepare("SELECT data FROM video_analysis WHERE video_id = ?").bind(id).first();
     const breaks = row?.data ? (JSON.parse(row.data).ad_breaks || []) : [];
@@ -462,7 +476,7 @@ async function studio(request, url, env, base, rest) {
     return `<tr>
       <td><a href="${esc(r.watch_url)}" target="_blank" rel="noopener">${esc(r.title)}</a><div class="muted">${esc(r.series || "")} · ${esc(r.video_id)}</div></td>
       <td>${r.duration ? ts(r.duration) : ""}</td>
-      <td>${r.segs ? `${r.segs} سطر · <a href="${base}/studio/${r.video_id}.srt">SRT</a>` : '<span class="muted">—</span>'}</td>
+      <td>${r.segs ? `${r.segs} سطر · <a href="${base}/studio/${r.video_id}.txt?view=1" target="_blank">نص</a> · <a href="${base}/studio/${r.video_id}.srt">SRT</a> · <a href="${base}/studio/${r.video_id}.vtt">VTT</a>` : '<span class="muted">—</span>'}</td>
       <td>${chips || '<span class="muted">—</span>'}${breaks.length ? ` <a href="${base}/studio/${r.video_id}-ads.csv">CSV</a>` : ""}</td>
       <td>${esc(status[r.auto_status] || (r.segs ? "✅ مفرّغة" : "—"))}<div class="muted">${esc((r.updated_at || "").slice(0, 16).replace("T", " "))}</div></td>
     </tr>`;

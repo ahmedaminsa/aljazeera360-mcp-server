@@ -3712,6 +3712,7 @@ async def _transcribe_and_store(meta: dict, chunks: list, language: str, source:
         "transcribed": f"{video_intel.fmt_ts(span[0])} – {video_intel.fmt_ts(min(span[1], meta['duration'] or span[1]))}",
         "source": source, "segments": len(moments), "failed_parts": failed, "saved_to_index": True,
         "transcript": text[:20000] + ("\n… (truncated here; the full transcript is in the index)" if len(text) > 20000 else ""),
+        **({"downloads": _downloads(meta["id"])} if STUDIO_URL else {}),
     }
 
 
@@ -3839,6 +3840,8 @@ async def get_video_analysis(video_id: Optional[int] = None) -> str:
         if video_id:
             for m in res.get("moments", []):
                 m["at"] = video_intel.fmt_ts(m.pop("t_sec", 0))
+            if STUDIO_URL and any(m.get("kind") == "transcript" for m in res.get("moments", [])):
+                res["downloads"] = _downloads(video_id, ads=True)
         return json.dumps(res, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"get_video_analysis: {e}")
@@ -3903,6 +3906,21 @@ async def _saved_transcript(video_id: int) -> tuple[list, Optional[str]]:
     return cues, f"saved transcript ({data.get('transcript_source') or 'Whisper'})"
 
 
+STUDIO_URL = os.environ.get("AJ360_STUDIO_URL", "").rstrip("/")
+
+
+def _downloads(video_id: int, ads: bool = False) -> Optional[dict]:
+    """Team only: links to the full saved transcript files (and ad-break CSV)."""
+    if not STUDIO_URL:
+        return None
+    links = {"text": f"{STUDIO_URL}/{video_id}.txt?view=1", "srt": f"{STUDIO_URL}/{video_id}.srt",
+             "vtt": f"{STUDIO_URL}/{video_id}.vtt"}
+    if ads:
+        links["ad_breaks_csv"] = f"{STUDIO_URL}/{video_id}-ads.csv"
+    links["note"] = "Full transcript files for the team; share the link rather than pasting the whole text."
+    return links
+
+
 @mcp.tool(annotations=ToolAnnotations(title="Get Transcript (نص الحلقة والترجمة)", readOnlyHint=True))
 @track_request("get_transcript")
 async def get_transcript(video_id: int, language: str = "ar", format: str = "text",
@@ -3911,7 +3929,8 @@ async def get_transcript(video_id: int, language: str = "ar", format: str = "tex
     Get the full text of an episode: the platform's own subtitle file (WebVTT/SRT) when the
     episode has one, otherwise a transcript already saved in the video index. Returns the
     text with timestamps, plain text, or a ready SRT/VTT file. If neither exists, says so and
-    lists the subtitle languages that are available.
+    lists the subtitle languages that are available. On the team endpoint, saved transcripts
+    also come with download links (text, SRT, VTT) to the full file.
 
     نص الحلقة الكامل: ملف الترجمة الخاص بالمنصة إن وجد، أو التفريغ المحفوظ في الفهرس.
 
@@ -3954,6 +3973,8 @@ async def get_transcript(video_id: int, language: str = "ar", format: str = "tex
                "transcript": body}
         if shown < len(picked):
             out["next"] = f"Continue with start_minute={picked[shown]['start'] / 60:.2f}"
+        if source and source.startswith("saved") and STUDIO_URL:
+            out["downloads"] = _downloads(meta["id"])
         return json.dumps(out, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"get_transcript {video_id}: {e}")
@@ -4044,6 +4065,8 @@ async def suggest_ad_breaks(video_id: int, count: Optional[int] = None, min_gap_
                         "Enter the chosen times as ad markers in Vesper (DVE)."}
         if advertiser_keywords:
             out["advertiser_placements"] = res["placements"]
+        if STUDIO_URL:
+            out["downloads"] = _downloads(meta["id"], ads=True)
         if not res["cues"]:
             out["hint"] = "No transcript yet: run listen_to_video for pause-accurate breaks."
         return json.dumps(out, ensure_ascii=False, indent=2)
@@ -4106,6 +4129,8 @@ async def get_social_pack(video_id: int, quotes: int = 8) -> list:
         }
         if not cues:
             pack["hint"] = "No transcript yet: run listen_to_video first for quotes and clip moments."
+        elif source.startswith("saved") and STUDIO_URL:
+            pack["downloads"] = _downloads(meta["id"], ads=bool(data.get("ad_breaks")))
         frames = await _episode_frames(meta)
         items = [json.dumps(pack, ensure_ascii=False, indent=2)]
         if frames:

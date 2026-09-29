@@ -155,7 +155,7 @@ Once an episode is transcribed, the team endpoint turns it into ready work for t
 
 **Automatic indexing.** Every hour the Worker asks the team container to transcribe the newest episodes of the main channels (2 per run) and compute their ad breaks, so the index stays current without anyone asking. DRM-protected episodes are marked and skipped.
 
-**Studio page.** `/team/<token>/studio` lists the indexed episodes with their transcript (SRT download) and suggested ad breaks (sensitive ones in red, CSV download).
+**Studio page and exports.** `/team/<token>/studio` lists the indexed episodes with their transcript and suggested ad breaks (sensitive ones in red). Each transcript downloads as text, SRT or VTT from `/team/<token>/studio/<video_id>.txt|.srt|.vtt`, and the ad breaks from `<video_id>-ads.csv`. On the team endpoint, `listen_to_video`, `get_transcript`, `get_video_analysis`, `suggest_ad_breaks` and `get_social_pack` return these links, so the full text reaches the team as a file instead of being pasted into the chat.
 
 Prompts on the team endpoint: `social_media_pack` and `contextual_ads`.
 

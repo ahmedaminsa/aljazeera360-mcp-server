@@ -442,3 +442,11 @@ def test_video_variant_is_chosen_by_height():
 def test_studio_tools_are_team_only():
     public = set(server.mcp._tool_manager._tools)
     assert not ({"suggest_ad_breaks", "get_social_pack", "make_clip"} & public) or os.environ.get("AJ360_ENABLE_SEO_TOOLS")
+
+
+def test_download_links_only_on_the_team_endpoint(monkeypatch):
+    monkeypatch.setattr(server, "STUDIO_URL", "")
+    assert server._downloads(7) is None
+    monkeypatch.setattr(server, "STUDIO_URL", "https://h/team/t/studio")
+    d = server._downloads(7, ads=True)
+    assert d["srt"] == "https://h/team/t/studio/7.srt" and d["ad_breaks_csv"].endswith("7-ads.csv")
