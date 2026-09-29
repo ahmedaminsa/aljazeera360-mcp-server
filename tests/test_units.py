@@ -477,7 +477,7 @@ def test_windows_merge_people_fixes_and_spaced_chapters():
     assert len(studio.merge_similar([{"name_en": "Gerald Bull"}, {"name_en": "Gerard Bull"}, {"name_en": "Gerald Ford"}])) == 2
     p = [x for x in m["people"] if x["name_en"]][0]
     assert p["type"] == "guest" and p["first_at"] == "12:00" and p["name_en"] == "Gerald Bull"
-    assert [(f["correct"], f["confidence"]) for f in m["name_fixes"]] == [("مردخاي فعنونو", "high"), ("جيرالد بول", "low")]
+    assert [(f["correct"], f["confidence"]) for f in m["name_fixes"]] == [("مردخاي فعنونو", "high")]
     assert [(c["start"], c["title"]) for c in m["chapters"]] == [("00:00", "البداية"), ("07:00", "مشبك الورق")]
 
 
@@ -512,3 +512,15 @@ def test_people_search_lists_everyone_with_empty_query(tmp_path, monkeypatch):
     asyncio.run(idx.save({"id": 3, "title": "t"}, {}, ["guest", "transcript"], rows))
     got = asyncio.run(idx.search("", "people", 50))["results"]
     assert [r["kind"] for r in got] == ["guest"]
+
+
+def test_name_suggestions_keep_errors_and_drop_expansions_and_synonyms():
+    items = [{"written": "مردخايف عنونه", "standard": "مردخاي فعنونو", "misheard": True},
+             {"written": "تاكساس", "standard": "تكساس", "misheard": False},
+             {"written": "براون", "standard": "فيرنر فون براون", "misheard": False},
+             {"written": "فيرنر براون", "standard": "فيرنر فون براون", "misheard": False},
+             {"written": "المانيا", "standard": "ألمانيا", "misheard": False},
+             {"written": "أمريكا", "standard": "الولايات المتحدة الأمريكية", "misheard": False},
+             {"written": "الاستخبارات الإسرائيلية", "standard": "الموساد", "misheard": True}]
+    got = [(f["heard"], f["confidence"]) for f in studio.name_suggestions(items)]
+    assert got == [("مردخايف عنونه", "high"), ("تاكساس", "low")]

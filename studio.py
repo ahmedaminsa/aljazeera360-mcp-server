@@ -512,13 +512,18 @@ ANALYSE_PROMPT = """You analyse part of an Arabic TV programme transcript produc
 proper names may be misspelled. Programme: «{title}» from «{series}». {description}
 Return ONLY JSON:
 {{"people":[{{"name":"correct full name in Arabic","name_en":"English spelling","role":"who they are, short, in Arabic","type":"guest|presenter|mentioned","first_at":"mm:ss"}}],
- "names":[{{"written":"a proper name EXACTLY as written in the transcript","standard":"its standard Arabic spelling","misheard":true,"at":"mm:ss"}}],
  "chapters":[{{"start":"mm:ss","title":"short Arabic chapter title (2-6 words)"}}]}}
 Rules: people = real named individuals only; type is guest/presenter only if they speak in the programme,
-otherwise mentioned. names = every proper name of a person, place or organisation in this part, copied
-character for character as written; misheard = true when the written form is a speech-recognition error
-(fused or split words, wrong letters), false when it is just a dialect or short form. chapters = where the
-subject changes, at most one per 2 minutes. Times come from the [mm:ss] marks."""
+otherwise mentioned. chapters = where the subject changes, at most one per 2 minutes.
+Times come from the [mm:ss] marks."""
+
+NAMES_PROMPT = """You proofread proper names in an Arabic speech-recognition transcript of «{title}» ({series}).
+Speech recognition often fuses or splits names and swaps letters (e.g. «مردخايف عنونه» for «مردخاي فعنونو»).
+List EVERY proper name of a person, place or organisation in the text, copied character for character as
+written, with its standard Arabic spelling.
+Return ONLY JSON: {{"names":[{{"written":"...","standard":"...","misheard":true,"at":"mm:ss"}}]}}
+misheard = true when the written form is a recognition error, false when it is only a variant spelling."""
+NAMES_WINDOW = 240
 
 
 def _strip_titles(name: str) -> str:
@@ -533,6 +538,32 @@ def person_key(name: str, name_en: Optional[str] = None) -> str:
     """Dedup key: the English spelling when known (Arabic spellings of foreign names vary)."""
     en = re.sub(r"[^a-z ]", "", (name_en or "").lower()).strip()
     return f"en:{en}" if en else _strip_titles(name)
+
+
+def name_suggestions(items: list[dict]) -> list[dict]:
+    """Keep real recognition errors (high) and near spelling variants of one word (low). Drop the rest:
+    same spelling after normalisation, longer forms («براون» → «فيرنر فون براون»), synonyms
+    («أمريكا» → «الولايات المتحدة»)."""
+    from difflib import SequenceMatcher
+    from video_intel import parse_ts
+    out: dict[str, dict] = {}
+    for f in items:
+        heard = (f.get("written") or "").strip()
+        correct = (f.get("standard") or "").strip()
+        nh, nc = normalize(heard), normalize(correct)
+        if not heard or not correct or nh == nc or heard in out:
+            continue
+        if set(nh.split()) <= set(nc.split()) or nh in nc:
+            continue
+        ratio = SequenceMatcher(None, nh, nc).ratio()
+        if f.get("misheard") is True and ratio >= 0.5:
+            conf = "high"
+        elif len(nh.split()) == 1 and ratio >= 0.8:
+            conf = "low"
+        else:
+            continue
+        out[heard] = {"heard": heard, "correct": correct, "at_sec": parse_ts(f.get("at", 0)), "confidence": conf}
+    return sorted(out.values(), key=lambda f: (f["confidence"] != "high", f["at_sec"]))
 
 
 def same_person(a: dict, b: dict) -> bool:
@@ -578,17 +609,7 @@ def merge_analysis(parts: list[dict], duration: float) -> dict:
         for k in ("name_en", "role"):
             if not cur[k] and entry[k]:
                 cur[k] = entry[k]
-    fixes: dict[str, dict] = {}
-    for f in (x for part in parts for x in (part.get("names") or []) + (part.get("name_fixes") or [])
-              if isinstance(x, dict)):
-        heard = (f.get("written") or f.get("heard") or "").strip()
-        correct = (f.get("standard") or f.get("correct") or "").strip()
-        nh, nc = normalize(heard), normalize(correct)
-        # A longer form of the same name is not a correction («براون» → «فيرنر فون براون»).
-        if heard and correct and nh != nc and nh not in nc and heard not in fixes:
-            misheard = f.get("misheard") is True or f.get("confidence") == "high"
-            fixes[heard] = {"heard": heard, "correct": correct, "at_sec": parse_ts(f.get("at", 0)),
-                            "confidence": "high" if misheard else "low"}
+    fixes = name_suggestions([x for part in parts for x in (part.get("names") or []) if isinstance(x, dict)])
     chapters = []
     for c in sorted((x for part in parts for x in part.get("chapters") or [] if isinstance(x, dict) and x.get("title")),
                     key=lambda c: parse_ts(c.get("start", 0))):
@@ -607,8 +628,7 @@ def merge_analysis(parts: list[dict], duration: float) -> dict:
     ppl = merge_similar(sorted(people.values(), key=lambda p: p["first_at_sec"]))
     for p in ppl:
         p["first_at"] = fmt_ts(p["first_at_sec"])
-    return {"people": ppl, "name_fixes": sorted(fixes.values(), key=lambda f: (f["confidence"] != "high", f["at_sec"])),
-            "chapters": chapters}
+    return {"people": ppl, "name_fixes": fixes, "chapters": chapters}
 
 
 async def analyse_transcript(cues: list[dict], meta: dict) -> dict:
@@ -627,8 +647,20 @@ async def analyse_transcript(cues: list[dict], meta: dict) -> dict:
                         if attempt:
                             return {}
                         await asyncio.sleep(2)
-        parts = await asyncio.gather(*(one(w) for w in windows(cues)))
-    return merge_analysis(list(parts), float(meta.get("duration") or 0))
+        names_system = NAMES_PROMPT.format(title=meta.get("title", ""), series=meta.get("series") or "")
+
+        async def names(win):
+            async with sem:
+                try:
+                    return parse_json(await llm(client, names_system, _stamped(win), 2500))
+                except Exception:
+                    return {}
+        parts, name_parts = await asyncio.gather(
+            asyncio.gather(*(one(w) for w in windows(cues))),
+            asyncio.gather(*(names(w) for w in windows(cues, NAMES_WINDOW))))
+    merged = merge_analysis(list(parts), float(meta.get("duration") or 0))
+    merged["name_fixes"] = name_suggestions([x for p in name_parts for x in p.get("names") or [] if isinstance(x, dict)])
+    return merged
 
 
 TRANSLATE_PROMPT = """You translate Arabic TV documentary subtitles into natural {language} subtitles.
