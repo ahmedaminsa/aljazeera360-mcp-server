@@ -430,7 +430,7 @@ async def cut_clip(hls_url: str, start: float, end: float, max_height: int = 720
 # ----------------------------------------------------------------------------
 LLM_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 WINDOW_SECONDS = 480          # transcript window per analysis call (~8 minutes)
-TRANSLATE_BATCH = 40          # subtitle lines per translation call
+TRANSLATE_BATCH = 30          # subtitle lines per translation call
 LANGUAGES = {"en": "English", "fr": "French", "es": "Spanish", "tr": "Turkish"}
 TITLES = [normalize(t) for t in ("الدكتور", "الدكتوره", "د.", "الاستاذ", "الاستاذه", "الشيخ", "المهندس",
                                  "السيد", "السيده", "البروفيسور", "الرئيس", "الجنرال", "اللواء", "العميد")]
@@ -515,8 +515,10 @@ Return ONLY JSON:
  "name_fixes":[{{"heard":"the wrong spelling exactly as written in the transcript","correct":"correct Arabic spelling","at":"mm:ss","confidence":"high|medium|low"}}],
  "chapters":[{{"start":"mm:ss","title":"short Arabic chapter title (2-6 words)"}}]}}
 Rules: people = real named individuals only. type is guest/presenter only if they speak in the programme,
-otherwise mentioned. name_fixes only for proper names clearly misheard by speech recognition (not dialect
-spelling). chapters = where the subject changes, at most one per 2 minutes. Times come from the [mm:ss] marks."""
+otherwise mentioned. name_fixes: only proper names whose written form is NOT a valid spelling of that name, because speech
+recognition misheard it (e.g. two words fused, wrong letters). Never flag: a short or partial form of a name
+(«براون» for «فيرنر فون براون»), dialect spelling, or ordinary words. If unsure, leave it out.
+chapters = where the subject changes, at most one per 2 minutes. Times come from the [mm:ss] marks."""
 
 
 def _strip_titles(name: str) -> str:
@@ -527,13 +529,19 @@ def _strip_titles(name: str) -> str:
     return n.strip()
 
 
+def person_key(name: str, name_en: Optional[str] = None) -> str:
+    """Dedup key: the English spelling when known (Arabic spellings of foreign names vary)."""
+    en = re.sub(r"[^a-z ]", "", (name_en or "").lower()).strip()
+    return f"en:{en}" if en else _strip_titles(name)
+
+
 def merge_analysis(parts: list[dict], duration: float) -> dict:
     """Combine per-window results: one entry per person, unique fixes, spaced chapters."""
     from video_intel import parse_ts
     people: dict[str, dict] = {}
     rank = {"presenter": 2, "guest": 2, "mentioned": 1}
     for p in (x for part in parts for x in part.get("people") or [] if isinstance(x, dict) and x.get("name")):
-        key = _strip_titles(p["name"])
+        key = person_key(p["name"], p.get("name_en"))
         if not key:
             continue
         at = parse_ts(p.get("first_at", 0))
@@ -553,7 +561,9 @@ def merge_analysis(parts: list[dict], duration: float) -> dict:
     fixes: dict[str, dict] = {}
     for f in (x for part in parts for x in part.get("name_fixes") or [] if isinstance(x, dict)):
         heard, correct = (f.get("heard") or "").strip(), (f.get("correct") or "").strip()
-        if heard and correct and normalize(heard) != normalize(correct) and heard not in fixes:
+        nh, nc = normalize(heard), normalize(correct)
+        # A longer form of the same name is not a correction («براون» → «فيرنر فون براون»).
+        if heard and correct and nh != nc and nh not in nc and heard not in fixes:
             fixes[heard] = {"heard": heard, "correct": correct, "at_sec": parse_ts(f.get("at", 0)),
                             "confidence": f.get("confidence") if f.get("confidence") in ("high", "medium", "low") else "medium"}
     chapters = []
@@ -598,36 +608,46 @@ async def analyse_transcript(cues: list[dict], meta: dict) -> dict:
 
 
 TRANSLATE_PROMPT = """You translate Arabic TV documentary subtitles into natural {language} subtitles.
-Programme: «{title}». Keep names correct (use the usual {language} spelling), keep each line short, and keep
-the meaning of dialect. Return ONLY JSON: {{"lines": ["...", ...]}} with exactly {n} lines, one per numbered
-input line, in the same order."""
+Programme: «{title}». Keep names correct (usual {language} spelling), keep each line short, keep the meaning
+of dialect. Translate every numbered line on its own, even if it is a fragment: never merge or split lines.
+Return ONLY JSON mapping each line number to its translation: {{"1": "...", "2": "...", ...}}"""
+
+
+async def _translate_batch(client, batch: list[dict], language: str, title: str) -> dict[int, str]:
+    system = TRANSLATE_PROMPT.format(language=language, title=title)
+    user = "\n".join(f"{i + 1}. {c['text']}" for i, c in enumerate(batch))
+    got = parse_json(await llm(client, system, user, 4000))
+    if isinstance(got.get("lines"), list):  # tolerate the list form
+        got = {str(i + 1): v for i, v in enumerate(got["lines"])}
+    out = {}
+    for k, v in got.items():
+        if str(k).isdigit() and 1 <= int(k) <= len(batch) and isinstance(v, str) and v.strip():
+            out[int(k) - 1] = v.strip()
+    return out
 
 
 async def translate_cues(cues: list[dict], language: str, title: str = "") -> list[dict]:
-    """Same timing, text translated. Lines the model skips keep the Arabic (marked)."""
+    """Same timing, text translated. Lines still missing after a retry keep the Arabic (marked)."""
     import asyncio
     lang = LANGUAGES.get(language, language)
-    batches = [cues[i:i + TRANSLATE_BATCH] for i in range(0, len(cues), TRANSLATE_BATCH)]
-    sem = asyncio.Semaphore(4)
+    done: dict[int, str] = {}
+    sem = asyncio.Semaphore(3)
     async with httpx.AsyncClient(timeout=180) as client:
-        async def one(batch):
+        async def run(idxs: list[int]):
             async with sem:
-                system = TRANSLATE_PROMPT.format(language=lang, title=title, n=len(batch))
-                user = "\n".join(f"{i + 1}. {c['text']}" for i, c in enumerate(batch))
-                for attempt in range(3):
-                    try:
-                        lines = parse_json(await llm(client, system, user, 4000)).get("lines") or []
-                        if len(lines) == len(batch):
-                            return [str(x).strip() for x in lines]
-                    except Exception:
-                        await asyncio.sleep(2)
-                return [None] * len(batch)
-        results = await asyncio.gather(*(one(b) for b in batches))
-    out = []
-    for batch, lines in zip(batches, results):
-        for c, line in zip(batch, lines):
-            out.append({"start": c["start"], "end": c["end"], "text": line or c["text"], "translated": bool(line)})
-    return out
+                try:
+                    part = await _translate_batch(client, [cues[i] for i in idxs], lang, title)
+                except Exception:
+                    return
+                for j, text in part.items():
+                    done[idxs[j]] = text
+        for size in (TRANSLATE_BATCH, 10):  # second pass: smaller batches for whatever is missing
+            todo = [i for i in range(len(cues)) if i not in done]
+            if not todo:
+                break
+            await asyncio.gather(*(run(todo[k:k + size]) for k in range(0, len(todo), size)))
+    return [{"start": c["start"], "end": c["end"], "text": done.get(i, c["text"]), "translated": i in done}
+            for i, c in enumerate(cues)]
 
 
 def apply_fixes(cues: list[dict], fixes: list[dict]) -> tuple[list[dict], int]:

@@ -465,14 +465,16 @@ def test_windows_merge_people_fixes_and_spaced_chapters():
          "name_fixes": [{"heard": "مردخايف عنونه", "correct": "مردخاي فعنونو", "at": "19:36"}],
          "chapters": [{"start": "00:30", "title": "البداية"}, {"start": "01:10", "title": "قريب جدًا"},
                       {"start": "07:00", "title": "مشبك الورق"}]},
-        {"people": [{"name": "جيرالد بول", "name_en": "Gerald Bull", "type": "guest", "first_at": "12:00"}],
-         "name_fixes": [{"heard": "مردخايف عنونه", "correct": "x"}, {"heard": "بول", "correct": "بول"}],
+        {"people": [{"name": "جيرالد بول", "name_en": "Gerald Bull", "type": "guest", "first_at": "12:00"},
+                    {"name": "جرارد بول", "name_en": "Gerald Bull", "type": "mentioned", "first_at": "17:00"}],
+         "name_fixes": [{"heard": "مردخايف عنونه", "correct": "x"}, {"heard": "بول", "correct": "بول"},
+                        {"heard": "براون", "correct": "فيرنر فون براون"}],
          "chapters": [{"start": "24:50", "title": "آخر ثواني"}]},
     ]
     m = studio.merge_analysis(parts, 1500)
-    assert len(m["people"]) == 1
-    p = m["people"][0]
-    assert p["type"] == "guest" and p["first_at"] == "12:00" and p["name_en"] == "Gerald Bull" and p["role"] == "عالم"
+    assert len(m["people"]) == 2  # the first had no English name yet
+    p = [x for x in m["people"] if x["name_en"]][0]
+    assert p["type"] == "guest" and p["first_at"] == "12:00" and p["name_en"] == "Gerald Bull"
     assert [f["correct"] for f in m["name_fixes"]] == ["مردخاي فعنونو"]
     assert [(c["start"], c["title"]) for c in m["chapters"]] == [("00:00", "البداية"), ("07:00", "مشبك الورق")]
 
@@ -487,14 +489,15 @@ def test_name_fixes_rewrite_text_and_word_timings():
 
 def test_translation_keeps_timing_and_falls_back_per_batch(monkeypatch):
     async def fake_llm(client, system, user, max_tokens=3000):
-        n = len(user.splitlines())
-        return json.dumps({"lines": [f"line {i}" for i in range(n)]}) if "bad" not in user else "{}"
+        lines = user.splitlines()
+        # Skips the "bad" line every time; batches otherwise fully translated.
+        return json.dumps({str(i + 1): f"line {i}" for i, l in enumerate(lines) if "bad" not in l})
     monkeypatch.setattr(studio, "llm", fake_llm)
     monkeypatch.setattr(studio, "TRANSLATE_BATCH", 2)
     cues = [{"start": i, "end": i + 1, "text": t} for i, t in enumerate(["أ", "ب", "bad", "د"])]
     out = asyncio.run(studio.translate_cues(cues, "en"))
     assert [c["start"] for c in out] == [0, 1, 2, 3]
-    assert out[0]["text"] == "line 0" and out[0]["translated"]
+    assert out[0]["text"] == "line 0" and out[0]["translated"] and out[3]["translated"]
     assert out[2]["text"] == "bad" and not out[2]["translated"]
 
 

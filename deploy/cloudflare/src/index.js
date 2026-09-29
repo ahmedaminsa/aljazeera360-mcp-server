@@ -489,7 +489,8 @@ async function guestsPage(env, base) {
   const people = new Map();
   for (const r of results) {
     const [name, role] = r.text.split(" — ");
-    const key = name.replace(/\s*\(.*?\)/, "").replace(/^(الدكتور|الدكتورة|د\.|الأستاذ|الأستاذة|الشيخ|المهندس)\s+/, "").trim();
+    const en = (name.match(/\(([^)]*)\)/)?.[1] || "").toLowerCase().replace(/[^a-z ]/g, "").trim();
+    const key = en ? `en:${en}` : name.replace(/\s*\(.*?\)/, "").replace(/^(الدكتور|الدكتورة|د\.|الأستاذ|الأستاذة|الشيخ|المهندس)\s+/, "").trim();
     const p = people.get(key) || { name, roles: new Set(), eps: new Map(), guest: 0 };
     if (role) p.roles.add(role);
     if (!p.eps.has(r.video_id)) {
