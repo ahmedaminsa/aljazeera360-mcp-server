@@ -393,6 +393,7 @@ CREATE TABLE IF NOT EXISTS video_moments (
   id INTEGER PRIMARY KEY AUTOINCREMENT, video_id INTEGER, t_sec INTEGER, kind TEXT, text TEXT, norm TEXT);
 CREATE INDEX IF NOT EXISTS idx_moments_video ON video_moments (video_id, kind);
 """
+PEOPLE_KINDS = ("guest", "person", "mention")
 # Word timings ([[start, end, word], ...] as JSON) ride on each transcript moment.
 _MIGRATIONS = ("ALTER TABLE video_moments ADD COLUMN words TEXT",)
 
@@ -551,14 +552,19 @@ class VideoIndex:
         return {"analysis": dict(a) if a else None, "moments": ms}
 
     async def search(self, query: str, kind: str, limit: int) -> dict:
+        """kind 'people' = guests, manual people and mentions; an empty query lists them all."""
         q = normalize(query)
         if self.remote:
             return await self._call("GET", "/internal/index/search", params={"q": q, "kind": kind, "limit": limit})
+        if not q and kind != "people":
+            return {"results": []}
         db = self._db()
+        kinds = PEOPLE_KINDS if kind == "people" else ([] if kind == "all" else [kind])
         sql = """SELECT m.video_id, m.t_sec, m.kind, m.text, m.words, a.title, a.series, a.watch_url
                  FROM video_moments m LEFT JOIN video_analysis a ON a.video_id=m.video_id
-                 WHERE m.norm LIKE ?""" + (" AND m.kind=?" if kind != "all" else "") + " ORDER BY m.video_id, m.t_sec LIMIT ?"
-        args = [f"%{q}%"] + ([kind] if kind != "all" else []) + [limit]
+                 WHERE m.norm LIKE ?""" + (f" AND m.kind IN ({','.join('?' * len(kinds))})" if kinds else "") \
+            + " ORDER BY m.video_id, m.t_sec LIMIT ?"
+        args = [f"%{q}%", *kinds, limit]
         return {"results": [dict(r) for r in db.execute(sql, args).fetchall()]}
 
 

@@ -450,3 +450,60 @@ def test_download_links_only_on_the_team_endpoint(monkeypatch):
     monkeypatch.setattr(server, "STUDIO_URL", "https://h/team/t/studio")
     d = server._downloads(7, ads=True)
     assert d["srt"] == "https://h/team/t/studio/7.srt" and d["ad_breaks_csv"].endswith("7-ads.csv")
+
+
+# -- Translation, chapters, guests, name review --------------------------------
+def test_model_json_is_parsed_from_fenced_or_chatty_replies():
+    assert studio.parse_json('```json\n{"a": "x \\" }", "b": [1]}\n```') == {"a": 'x " }', "b": [1]}
+    assert studio.parse_json("Sure! {\"lines\": [\"hi\"]} hope it helps") == {"lines": ["hi"]}
+    assert studio.parse_json("no json") == {}
+
+
+def test_windows_merge_people_fixes_and_spaced_chapters():
+    parts = [
+        {"people": [{"name": "الدكتور جيرالد بول", "role": "عالم", "type": "mentioned", "first_at": "14:40"}],
+         "name_fixes": [{"heard": "مردخايف عنونه", "correct": "مردخاي فعنونو", "at": "19:36"}],
+         "chapters": [{"start": "00:30", "title": "البداية"}, {"start": "01:10", "title": "قريب جدًا"},
+                      {"start": "07:00", "title": "مشبك الورق"}]},
+        {"people": [{"name": "جيرالد بول", "name_en": "Gerald Bull", "type": "guest", "first_at": "12:00"}],
+         "name_fixes": [{"heard": "مردخايف عنونه", "correct": "x"}, {"heard": "بول", "correct": "بول"}],
+         "chapters": [{"start": "24:50", "title": "آخر ثواني"}]},
+    ]
+    m = studio.merge_analysis(parts, 1500)
+    assert len(m["people"]) == 1
+    p = m["people"][0]
+    assert p["type"] == "guest" and p["first_at"] == "12:00" and p["name_en"] == "Gerald Bull" and p["role"] == "عالم"
+    assert [f["correct"] for f in m["name_fixes"]] == ["مردخاي فعنونو"]
+    assert [(c["start"], c["title"]) for c in m["chapters"]] == [("00:00", "البداية"), ("07:00", "مشبك الورق")]
+
+
+def test_name_fixes_rewrite_text_and_word_timings():
+    cues = [{"start": 1, "end": 3, "text": "قصة مردخايف عنونه بدأت",
+             "words": [[1, 1.4, "قصة"], [1.4, 2.0, "مردخايف"], [2.0, 2.5, "عنونه"], [2.5, 3, "بدأت"]]}]
+    out, n = studio.apply_fixes(cues, [{"heard": "مردخايف عنونه", "correct": "مردخاي فعنونو"}])
+    assert n == 1 and out[0]["text"] == "قصة مردخاي فعنونو بدأت"
+    assert out[0]["words"] == [[1, 1.4, "قصة"], [1.4, 2.5, "مردخاي فعنونو"], [2.5, 3, "بدأت"]]
+
+
+def test_translation_keeps_timing_and_falls_back_per_batch(monkeypatch):
+    async def fake_llm(client, system, user, max_tokens=3000):
+        n = len(user.splitlines())
+        return json.dumps({"lines": [f"line {i}" for i in range(n)]}) if "bad" not in user else "{}"
+    monkeypatch.setattr(studio, "llm", fake_llm)
+    monkeypatch.setattr(studio, "TRANSLATE_BATCH", 2)
+    cues = [{"start": i, "end": i + 1, "text": t} for i, t in enumerate(["أ", "ب", "bad", "د"])]
+    out = asyncio.run(studio.translate_cues(cues, "en"))
+    assert [c["start"] for c in out] == [0, 1, 2, 3]
+    assert out[0]["text"] == "line 0" and out[0]["translated"]
+    assert out[2]["text"] == "bad" and not out[2]["translated"]
+
+
+def test_people_search_lists_everyone_with_empty_query(tmp_path, monkeypatch):
+    monkeypatch.setattr(video_intel, "LOCAL_DB", str(tmp_path / "p.db"))
+    idx = video_intel.VideoIndex()
+    idx.remote = False
+    rows = [{"t_sec": 5, "kind": "guest", "text": "جيرالد بول — عالم", "norm": "جيرالد بول — عالم"},
+            {"t_sec": 9, "kind": "transcript", "text": "كلام", "norm": "كلام"}]
+    asyncio.run(idx.save({"id": 3, "title": "t"}, {}, ["guest", "transcript"], rows))
+    got = asyncio.run(idx.search("", "people", 50))["results"]
+    assert [r["kind"] for r in got] == ["guest"]

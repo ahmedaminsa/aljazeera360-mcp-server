@@ -41,7 +41,7 @@ jobs:
           from server import mcp
           tools = mcp._tool_manager._tools if hasattr(mcp, '_tool_manager') else {}
           print(f'✅ full profile: {len(tools)} tools registered')
-          assert len(tools) == 36, f'Full profile: expected 36 tools, got {len(tools)}'
+          assert len(tools) == 41, f'Full profile: expected 41 tools, got {len(tools)}'
           "
 
       - name: Offline unit tests (no network, no secrets — these gate the build)

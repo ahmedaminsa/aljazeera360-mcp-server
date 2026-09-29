@@ -12,6 +12,7 @@ first pass from keyword lists; the assistant reading the result refines them.
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import tempfile
@@ -422,3 +423,236 @@ async def cut_clip(hls_url: str, start: float, end: float, max_height: int = 720
         for p in paths:
             if os.path.exists(p):
                 os.remove(p)
+
+
+# ----------------------------------------------------------------------------
+# Language model (Workers AI via the Worker): translation, chapters, guests, names
+# ----------------------------------------------------------------------------
+LLM_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+WINDOW_SECONDS = 480          # transcript window per analysis call (~8 minutes)
+TRANSLATE_BATCH = 40          # subtitle lines per translation call
+LANGUAGES = {"en": "English", "fr": "French", "es": "Spanish", "tr": "Turkish"}
+TITLES = [normalize(t) for t in ("الدكتور", "الدكتوره", "د.", "الاستاذ", "الاستاذه", "الشيخ", "المهندس",
+                                 "السيد", "السيده", "البروفيسور", "الرئيس", "الجنرال", "اللواء", "العميد")]
+
+
+def llm_available() -> bool:
+    from video_intel import CF_ACCOUNT, CF_AI_TOKEN, INDEX_URL, INTERNAL_TOKEN
+    return bool((INDEX_URL and INTERNAL_TOKEN) or (CF_ACCOUNT and CF_AI_TOKEN))
+
+
+async def llm(client: httpx.AsyncClient, system: str, user: str, max_tokens: int = 3000) -> str:
+    from video_intel import CF_ACCOUNT, CF_AI_TOKEN, INDEX_URL, INTERNAL_TOKEN
+    body = {"messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "max_tokens": max_tokens, "temperature": 0.2}
+    if INDEX_URL and INTERNAL_TOKEN:
+        resp = await client.post(f"{INDEX_URL}/internal/llm", json={**body, "model": LLM_MODEL},
+                                 headers={"x-internal-token": INTERNAL_TOKEN})
+    elif CF_ACCOUNT and CF_AI_TOKEN:
+        resp = await client.post(f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT}/ai/run/{LLM_MODEL}",
+                                 json=body, headers={"Authorization": f"Bearer {CF_AI_TOKEN}"})
+    else:
+        raise RuntimeError("no language model backend configured")
+    resp.raise_for_status()
+    res = resp.json().get("result", {})
+    out = res.get("response") if isinstance(res, dict) else res
+    return out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)
+
+
+def parse_json(text: str) -> dict:
+    """First JSON object in a model reply (tolerates ``` fences and chatter)."""
+    t = re.sub(r"```(?:json)?", "", text or "")
+    start = t.find("{")
+    if start < 0:
+        return {}
+    depth, in_str, esc = 0, False, False
+    for i in range(start, len(t)):
+        ch = t[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(t[start:i + 1])
+                except ValueError:
+                    return {}
+    return {}
+
+
+def windows(cues: list[dict], size: int = WINDOW_SECONDS) -> list[list[dict]]:
+    out, cur, start = [], [], None
+    for c in cues:
+        if start is None:
+            start = c["start"]
+        if c["start"] - start >= size and cur:
+            out.append(cur)
+            cur, start = [], c["start"]
+        cur.append(c)
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _stamped(cues: list[dict]) -> str:
+    return "\n".join(f"[{fmt_ts(c['start'])}] {c['text']}" for c in cues)
+
+
+ANALYSE_PROMPT = """You analyse part of an Arabic TV programme transcript produced by speech recognition, so
+proper names may be misspelled. Programme: «{title}» from «{series}». {description}
+Return ONLY JSON:
+{{"people":[{{"name":"correct full name in Arabic","name_en":"English spelling","role":"who they are, short, in Arabic","type":"guest|presenter|mentioned","first_at":"mm:ss"}}],
+ "name_fixes":[{{"heard":"the wrong spelling exactly as written in the transcript","correct":"correct Arabic spelling","at":"mm:ss","confidence":"high|medium|low"}}],
+ "chapters":[{{"start":"mm:ss","title":"short Arabic chapter title (2-6 words)"}}]}}
+Rules: people = real named individuals only. type is guest/presenter only if they speak in the programme,
+otherwise mentioned. name_fixes only for proper names clearly misheard by speech recognition (not dialect
+spelling). chapters = where the subject changes, at most one per 2 minutes. Times come from the [mm:ss] marks."""
+
+
+def _strip_titles(name: str) -> str:
+    n = normalize(name)
+    for t in TITLES:
+        if n.startswith(t + " "):
+            n = n[len(t) + 1:]
+    return n.strip()
+
+
+def merge_analysis(parts: list[dict], duration: float) -> dict:
+    """Combine per-window results: one entry per person, unique fixes, spaced chapters."""
+    from video_intel import parse_ts
+    people: dict[str, dict] = {}
+    rank = {"presenter": 2, "guest": 2, "mentioned": 1}
+    for p in (x for part in parts for x in part.get("people") or [] if isinstance(x, dict) and x.get("name")):
+        key = _strip_titles(p["name"])
+        if not key:
+            continue
+        at = parse_ts(p.get("first_at", 0))
+        cur = people.get(key)
+        entry = {"name": p["name"].strip(), "name_en": (p.get("name_en") or "").strip(),
+                 "role": (p.get("role") or "").strip(),
+                 "type": p.get("type") if p.get("type") in rank else "mentioned", "first_at_sec": at}
+        if cur is None:
+            people[key] = entry
+            continue
+        if rank[entry["type"]] > rank[cur["type"]]:
+            cur["type"] = entry["type"]
+        cur["first_at_sec"] = min(cur["first_at_sec"], at)
+        for k in ("name_en", "role"):
+            if not cur[k] and entry[k]:
+                cur[k] = entry[k]
+    fixes: dict[str, dict] = {}
+    for f in (x for part in parts for x in part.get("name_fixes") or [] if isinstance(x, dict)):
+        heard, correct = (f.get("heard") or "").strip(), (f.get("correct") or "").strip()
+        if heard and correct and normalize(heard) != normalize(correct) and heard not in fixes:
+            fixes[heard] = {"heard": heard, "correct": correct, "at_sec": parse_ts(f.get("at", 0)),
+                            "confidence": f.get("confidence") if f.get("confidence") in ("high", "medium", "low") else "medium"}
+    chapters = []
+    for c in sorted((x for part in parts for x in part.get("chapters") or [] if isinstance(x, dict) and x.get("title")),
+                    key=lambda c: parse_ts(c.get("start", 0))):
+        t = parse_ts(c.get("start", 0))
+        if duration and t >= duration - 30:
+            continue
+        if not chapters or t - chapters[-1]["start_sec"] >= 120:
+            chapters.append({"start_sec": t, "title": c["title"].strip()})
+    if chapters and chapters[0]["start_sec"] > 0:
+        if chapters[0]["start_sec"] < 60:
+            chapters[0]["start_sec"] = 0
+        else:
+            chapters.insert(0, {"start_sec": 0, "title": "مقدمة"})
+    for c in chapters:
+        c["start"] = fmt_ts(c["start_sec"])
+    ppl = sorted(people.values(), key=lambda p: p["first_at_sec"])
+    for p in ppl:
+        p["first_at"] = fmt_ts(p["first_at_sec"])
+    return {"people": ppl, "name_fixes": sorted(fixes.values(), key=lambda f: f["at_sec"]), "chapters": chapters}
+
+
+async def analyse_transcript(cues: list[dict], meta: dict) -> dict:
+    """People, likely misheard names and chapters for a whole episode (windowed LLM calls)."""
+    import asyncio
+    system = ANALYSE_PROMPT.format(title=meta.get("title", ""), series=meta.get("series") or "",
+                                   description=(meta.get("description") or "")[:400])
+    sem = asyncio.Semaphore(4)
+    async with httpx.AsyncClient(timeout=180) as client:
+        async def one(win):
+            async with sem:
+                for attempt in range(2):
+                    try:
+                        return parse_json(await llm(client, system, _stamped(win)))
+                    except Exception:
+                        if attempt:
+                            return {}
+                        await asyncio.sleep(2)
+        parts = await asyncio.gather(*(one(w) for w in windows(cues)))
+    return merge_analysis(list(parts), float(meta.get("duration") or 0))
+
+
+TRANSLATE_PROMPT = """You translate Arabic TV documentary subtitles into natural {language} subtitles.
+Programme: «{title}». Keep names correct (use the usual {language} spelling), keep each line short, and keep
+the meaning of dialect. Return ONLY JSON: {{"lines": ["...", ...]}} with exactly {n} lines, one per numbered
+input line, in the same order."""
+
+
+async def translate_cues(cues: list[dict], language: str, title: str = "") -> list[dict]:
+    """Same timing, text translated. Lines the model skips keep the Arabic (marked)."""
+    import asyncio
+    lang = LANGUAGES.get(language, language)
+    batches = [cues[i:i + TRANSLATE_BATCH] for i in range(0, len(cues), TRANSLATE_BATCH)]
+    sem = asyncio.Semaphore(4)
+    async with httpx.AsyncClient(timeout=180) as client:
+        async def one(batch):
+            async with sem:
+                system = TRANSLATE_PROMPT.format(language=lang, title=title, n=len(batch))
+                user = "\n".join(f"{i + 1}. {c['text']}" for i, c in enumerate(batch))
+                for attempt in range(3):
+                    try:
+                        lines = parse_json(await llm(client, system, user, 4000)).get("lines") or []
+                        if len(lines) == len(batch):
+                            return [str(x).strip() for x in lines]
+                    except Exception:
+                        await asyncio.sleep(2)
+                return [None] * len(batch)
+        results = await asyncio.gather(*(one(b) for b in batches))
+    out = []
+    for batch, lines in zip(batches, results):
+        for c, line in zip(batch, lines):
+            out.append({"start": c["start"], "end": c["end"], "text": line or c["text"], "translated": bool(line)})
+    return out
+
+
+def apply_fixes(cues: list[dict], fixes: list[dict]) -> tuple[list[dict], int]:
+    """Replace misheard names in the transcript text and its word timings. Returns (cues, replacements)."""
+    count = 0
+    out = []
+    for c in cues:
+        text, words = c["text"], [list(w) for w in c.get("words") or []]
+        for f in fixes:
+            heard, correct = f["heard"].strip(), f["correct"].strip()
+            if not heard or heard not in text:
+                continue
+            count += text.count(heard)
+            text = text.replace(heard, correct)
+            hw = heard.split()
+            i = 0
+            while i <= len(words) - len(hw):
+                span = " ".join(w[2] for w in words[i:i + len(hw)])
+                if heard in span:
+                    merged = [words[i][0], words[i + len(hw) - 1][1], span.replace(heard, correct)]
+                    words[i:i + len(hw)] = [merged]
+                i += 1
+        out.append({**c, "text": text, "words": words})
+    return out, count
+
+
+def youtube_chapters(chapters: list[dict]) -> str:
+    return "\n".join(f"{c['start']} {c['title']}" for c in chapters)

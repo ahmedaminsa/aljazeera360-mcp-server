@@ -239,6 +239,15 @@ async function usageReport(env, url) {
 // ---------------------------------------------------------------------------
 
 const WHISPER_MODEL = "@cf/openai/whisper-large-v3-turbo";
+// First entry is the default; the others are allowed for comparison.
+const LLM_MODELS = [
+  "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+  "@cf/google/gemma-3-12b-it",
+  "@cf/mistralai/mistral-small-3.1-24b-instruct",
+  "@cf/qwen/qwen3-30b-a3b-fp8",
+  "@cf/openai/gpt-oss-120b",
+  "@cf/meta/llama-4-scout-17b-16e-instruct",
+];
 
 /** Same rules as video_intel.normalize() in Python. */
 function normalizeText(t) {
@@ -275,11 +284,27 @@ async function handleInternal(request, url, env) {
       return Response.json({ result });
     }
 
+    // Text model for translation, chapters, guest extraction and name review.
+    if (url.pathname === "/internal/llm" && request.method === "POST") {
+      if (!env.AI) return Response.json({ error: "Workers AI binding missing" }, { status: 500 });
+      const body = await request.json();
+      const model = LLM_MODELS.includes(body.model) ? body.model : LLM_MODELS[0];
+      const result = await env.AI.run(model, {
+        messages: body.messages,
+        max_tokens: Math.min(Number(body.max_tokens) || 2048, 8192),
+        temperature: body.temperature ?? 0.2,
+        ...(body.response_format ? { response_format: body.response_format } : {}),
+      });
+      return Response.json({ model, result });
+    }
+
     if (url.pathname === "/internal/clip" && request.method === "POST") {
       if (!env.CLIPS) return Response.json({ error: "Clip storage (R2) not configured" }, { status: 500 });
       const name = (url.searchParams.get("name") || "clip.mp4").replace(/[^\w.-]+/g, "-").slice(0, 80);
-      const key = `${crypto.randomUUID()}/${name}`;
-      await env.CLIPS.put(key, request.body, { httpMetadata: { contentType: "video/mp4" } });
+      // Chapter frames (Vesper annotation images) are kept; clips expire after CLIP_DAYS.
+      const frame = url.searchParams.get("kind") === "frame";
+      const key = `${frame ? "annotations/" : ""}${crypto.randomUUID()}/${name}`;
+      await env.CLIPS.put(key, request.body, { httpMetadata: { contentType: frame ? "image/jpeg" : "video/mp4" } });
       return Response.json({ url: `${url.origin}/clips/${key}` });
     }
 
@@ -345,13 +370,16 @@ async function handleInternal(request, url, env) {
       const q = normalizeText(url.searchParams.get("q") || "");
       const kind = url.searchParams.get("kind") || "all";
       const limit = Math.min(Math.max(parseInt(url.searchParams.get("limit") || "40", 10) || 40, 1), 200);
-      if (!q) return Response.json({ results: [] });
+      // kind "people" = guests, manual people and mentions; an empty query lists them all.
+      if (!q && kind !== "people") return Response.json({ results: [] });
+      const kinds = kind === "people" ? ["guest", "person", "mention"] : kind === "all" ? [] : [kind];
+      const lim = kind === "people" ? Math.min(Math.max(parseInt(url.searchParams.get("limit") || "40", 10) || 40, 1), 2000) : limit;
       const { results } = await db.prepare(
         `SELECT m.video_id, m.t_sec, m.kind, m.text, m.words, a.title, a.series, a.watch_url
          FROM video_moments m LEFT JOIN video_analysis a ON a.video_id = m.video_id
-         WHERE m.norm LIKE ?${kind !== "all" ? " AND m.kind = ?" : ""}
+         WHERE m.norm LIKE ?${kinds.length ? ` AND m.kind IN (${kinds.map(() => "?").join(",")})` : ""}
          ORDER BY m.video_id, m.t_sec LIMIT ?`
-      ).bind(`%${q}%`, ...(kind !== "all" ? [kind] : []), limit).all();
+      ).bind(`%${q}%`, ...kinds, lim).all();
       return Response.json({ results });
     }
     return Response.json({ error: "Not found" }, { status: 404 });
@@ -392,7 +420,7 @@ async function serveClip(request, url, env) {
   const obj = await env.CLIPS.get(key, opts);
   if (!obj) return new Response("Not found", { status: 404 });
   const headers = new Headers({
-    "content-type": "video/mp4", "accept-ranges": "bytes", "cache-control": "private, max-age=3600",
+    "content-type": obj.httpMetadata?.contentType || "video/mp4", "accept-ranges": "bytes", "cache-control": "private, max-age=3600",
     "content-disposition": `inline; filename="${key.split("/").pop()}"`, "x-robots-tag": "noindex",
   });
   if (m && obj.range) {
@@ -412,7 +440,7 @@ async function deleteOldClips(env) {
   let cursor, removed = 0;
   do {
     const page = await env.CLIPS.list({ cursor, limit: 500 });
-    const old = page.objects.filter((o) => o.uploaded.getTime() < cutoff).map((o) => o.key);
+    const old = page.objects.filter((o) => o.uploaded.getTime() < cutoff && !o.key.startsWith("annotations/")).map((o) => o.key);
     if (old.length) { await env.CLIPS.delete(old); removed += old.length; }
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);
@@ -428,15 +456,89 @@ const ts = (s) => { s = Math.max(0, Math.floor(Number(s) || 0)); const h = Math.
 const srtTs = (s) => { const ms = Math.round(s * 1000); const p = (n, w = 2) => String(n).padStart(w, "0");
   return `${p(Math.floor(ms / 3600000))}:${p(Math.floor(ms % 3600000 / 60000))}:${p(Math.floor(ms % 60000 / 1000))},${p(ms % 1000, 3)}`; };
 
+async function chapterExport(env, url, base, id, what) {
+  const row = await env.ANALYTICS_DB.prepare("SELECT title, data FROM video_analysis WHERE video_id = ?").bind(id).first();
+  const data = row?.data ? JSON.parse(row.data) : {};
+  const chapters = data.chapters || [];
+  if (!chapters.length) return new Response("No chapters yet: run generate_chapters.", { status: 404 });
+  const start = (c) => Number(c.start_sec ?? 0);
+  if (what === "chapters.txt") {
+    const body = chapters.map((c) => `${ts(start(c))} ${c.title}`).join("\n");
+    return new Response(body + "\n", { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+  }
+  // One row for this video's DVE batch-update CSV: annotations + subtitle tracks.
+  const cols = {}, q = (v) => `"${String(v).replace(/"/g, '""')}"`;
+  for (const c of chapters) cols[`annotations.${start(c) * 1000}`] = `${c.thumb || ""}|${c.title}`;
+  const { results } = await env.ANALYTICS_DB.prepare(
+    "SELECT DISTINCT kind FROM video_moments WHERE video_id = ? AND kind LIKE 'transcript%'").bind(id).all();
+  const names = { en: "English", fr: "Français", es: "Español", tr: "Türkçe" };
+  for (const { kind } of results) {
+    if (kind === "transcript") cols["subtitle.ar"] = `${url.origin}${base}/studio/${id}.vtt|العربية`;
+    else { const l = kind.split("_")[1]; cols[`subtitle.${l === "en" ? "en-GB" : l}`] = `${url.origin}${base}/studio/${id}.${l}.vtt|${names[l] || l}`; }
+  }
+  const header = ["vodId", ...Object.keys(cols)], values = [id, ...Object.values(cols)];
+  return new Response("\ufeff" + header.map(q).join(",") + "\n" + values.map(q).join(",") + "\n", { headers: {
+    "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="aj360-${id}-dve.csv"` } });
+}
+
+async function guestsPage(env, base) {
+  const { results } = await env.ANALYTICS_DB.prepare(
+    `SELECT m.video_id, m.t_sec, m.kind, m.text, a.title, a.watch_url FROM video_moments m
+     LEFT JOIN video_analysis a ON a.video_id = m.video_id
+     WHERE m.kind IN ('guest','person','mention') ORDER BY m.video_id, m.t_sec LIMIT 5000`).all();
+  const people = new Map();
+  for (const r of results) {
+    const [name, role] = r.text.split(" — ");
+    const key = name.replace(/\s*\(.*?\)/, "").replace(/^(الدكتور|الدكتورة|د\.|الأستاذ|الأستاذة|الشيخ|المهندس)\s+/, "").trim();
+    const p = people.get(key) || { name, roles: new Set(), eps: new Map(), guest: 0 };
+    if (role) p.roles.add(role);
+    if (!p.eps.has(r.video_id)) {
+      p.eps.set(r.video_id, { title: r.title, url: r.watch_url, at: ts(r.t_sec), guest: r.kind !== "mention" });
+      if (r.kind !== "mention") p.guest++;
+    }
+    people.set(key, p);
+  }
+  const rows = [...people.values()].sort((a, b) => (b.guest * 2 + b.eps.size) - (a.guest * 2 + a.eps.size)).map((p) => `<tr>
+    <td><b>${esc(p.name)}</b><div class="muted">${esc([...p.roles].slice(0, 2).join(" · "))}</div></td>
+    <td>${p.guest ? `<span class="chip">ضيف ${p.guest}</span>` : ""}${p.eps.size - p.guest ? `<span class="chip muted">ذُكر ${p.eps.size - p.guest}</span>` : ""}</td>
+    <td>${[...p.eps.values()].map((e) => `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.title)}</a> <span class="muted">${e.at}</span>`).join("<br>")}</td></tr>`).join("");
+  return studioShell("ضيوف الجزيرة 360", `<p class="muted"><a href="${base}/studio">← الحلقات</a> · كل من ظهر أو ذُكر في الحلقات المفهرسة (${people.size}).</p>
+<div class="card"><table><thead><tr><th>الاسم والدور</th><th>الظهور</th><th>الحلقات والتوقيت</th></tr></thead>
+<tbody>${rows || '<tr><td colspan="3" class="muted">لا يوجد ضيوف بعد: شغّل generate_chapters على الحلقات المفرغة.</td></tr>'}</tbody></table></div>`);
+}
+
+function studioShell(title, body) {
+  return new Response(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${esc(title)}</title>
+<style>
+:root{--bg:#f3f4f6;--card:#fff;--ink:#16181d;--muted:#5e6470;--line:#e3e5e9;--acc:#3ecf6a;--warn:#e5484d}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#171a20;--ink:#eef0f3;--muted:#9aa1ad;--line:#262a33}}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 system-ui,"Segoe UI",Tahoma,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:24px 16px}h1{margin:0 0 4px;font-size:24px}.muted{color:var(--muted);font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow-x:auto;margin-top:18px}
+table{width:100%;border-collapse:collapse;min-width:720px}th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:start;vertical-align:top}
+th{font-size:13px;color:var(--muted);font-weight:600}a{color:inherit}
+.chip{display:inline-block;padding:1px 8px;margin:2px;border-radius:99px;background:color-mix(in srgb,var(--acc) 18%,transparent);font:12px ui-monospace,monospace}
+.chip.warn{background:color-mix(in srgb,var(--warn) 18%,transparent)}
+</style></head><body><main><h1>${esc(title)}</h1>${body}</main></body></html>`,
+    { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex" } });
+}
+
 async function studio(request, url, env, base, rest) {
   const db = env.ANALYTICS_DB;
   await migrate(db);
-  const file = rest.match(/^\/(\d+)(\.srt|\.vtt|\.txt|-ads\.csv)$/);
+  if (rest === "/guests") return guestsPage(env, base);
+  const extra = rest.match(/^\/(\d+)-(chapters\.txt|dve\.csv)$/);
+  if (extra) return chapterExport(env, url, base, Number(extra[1]), extra[2]);
+  const file = rest.match(/^\/(\d+)(?:\.([a-z]{2}))?(\.srt|\.vtt|\.txt|-ads\.csv)$/);
   if (file) {
     const id = Number(file[1]);
+    const lang = file[2];
+    file[2] = file[3];
     if (file[2] !== "-ads.csv") {
+      const tkind = lang && lang !== "ar" ? `transcript_${lang}` : "transcript";
       const { results } = await db.prepare(
-        "SELECT t_sec, text, words FROM video_moments WHERE video_id = ? AND kind = 'transcript' ORDER BY t_sec").bind(id).all();
+        "SELECT t_sec, text, words FROM video_moments WHERE video_id = ? AND kind = ? ORDER BY t_sec").bind(id, tkind).all();
       if (!results.length) return new Response("No saved transcript for this episode.", { status: 404 });
       const row = await db.prepare("SELECT title FROM video_analysis WHERE video_id = ?").bind(id).first();
       const cues = results.map((r, i) => {
@@ -451,7 +553,7 @@ async function studio(request, url, env, base, rest) {
           ? "WEBVTT\n\n" + cues.map((c) => `${srtTs(c.start).replace(",", ".")} --> ${srtTs(c.end).replace(",", ".")}\n${c.text}`).join("\n\n")
           : cues.map((c, i) => `${i + 1}\n${srtTs(c.start)} --> ${srtTs(c.end)}\n${c.text}`).join("\n\n");
       const type = { srt: "application/x-subrip", vtt: "text/vtt", txt: "text/plain" }[kind];
-      const disposition = url.searchParams.get("view") ? "inline" : `attachment; filename="aj360-${id}.${kind}"`;
+      const disposition = url.searchParams.get("view") ? "inline" : `attachment; filename="aj360-${id}${lang ? "." + lang : ""}.${kind}"`;
       return new Response(body + "\n", { headers: {
         "content-type": `${type}; charset=utf-8`, "content-disposition": disposition,
         "cache-control": "no-store", "x-robots-tag": "noindex" } });
@@ -467,7 +569,9 @@ async function studio(request, url, env, base, rest) {
     `SELECT a.video_id, a.title, a.series, a.duration, a.watch_url, a.updated_at,
        json_extract(a.data, '$.auto_index.status') AS auto_status,
        json_extract(a.data, '$.ad_breaks') AS ad_breaks,
-       (SELECT COUNT(*) FROM video_moments m WHERE m.video_id = a.video_id AND m.kind = 'transcript') AS segs
+       (SELECT COUNT(*) FROM video_moments m WHERE m.video_id = a.video_id AND m.kind = 'transcript') AS segs,
+       (SELECT COUNT(*) FROM video_moments m WHERE m.video_id = a.video_id AND m.kind = 'transcript_en') AS en,
+       json_array_length(json_extract(a.data, '$.chapters')) AS chapters
      FROM video_analysis a ORDER BY a.updated_at DESC LIMIT 150`).all();
   const status = { done: "✅ مفهرسة", protected: "🔒 محمية DRM", failed: "⚠️ فشلت" };
   const rows = results.map((r) => {
@@ -476,7 +580,7 @@ async function studio(request, url, env, base, rest) {
     return `<tr>
       <td><a href="${esc(r.watch_url)}" target="_blank" rel="noopener">${esc(r.title)}</a><div class="muted">${esc(r.series || "")} · ${esc(r.video_id)}</div></td>
       <td>${r.duration ? ts(r.duration) : ""}</td>
-      <td>${r.segs ? `${r.segs} سطر · <a href="${base}/studio/${r.video_id}.txt?view=1" target="_blank">نص</a> · <a href="${base}/studio/${r.video_id}.srt">SRT</a> · <a href="${base}/studio/${r.video_id}.vtt">VTT</a>` : '<span class="muted">—</span>'}</td>
+      <td>${r.segs ? `${r.segs} سطر · <a href="${base}/studio/${r.video_id}.txt?view=1" target="_blank">نص</a> · <a href="${base}/studio/${r.video_id}.srt">SRT</a> · <a href="${base}/studio/${r.video_id}.vtt">VTT</a>` : '<span class="muted">—</span>'}${r.en ? `<div>EN: <a href="${base}/studio/${r.video_id}.en.txt?view=1" target="_blank">نص</a> · <a href="${base}/studio/${r.video_id}.en.srt">SRT</a></div>` : ""}${r.chapters ? `<div>${r.chapters} فصول · <a href="${base}/studio/${r.video_id}-chapters.txt" target="_blank">يوتيوب</a> · <a href="${base}/studio/${r.video_id}-dve.csv">Vesper CSV</a></div>` : ""}</td>
       <td>${chips || '<span class="muted">—</span>'}${breaks.length ? ` <a href="${base}/studio/${r.video_id}-ads.csv">CSV</a>` : ""}</td>
       <td>${esc(status[r.auto_status] || (r.segs ? "✅ مفرّغة" : "—"))}<div class="muted">${esc((r.updated_at || "").slice(0, 16).replace("T", " "))}</div></td>
     </tr>`;
@@ -497,7 +601,7 @@ th{font-size:13px;color:var(--muted);font-weight:600}a{color:inherit}
 .chip.warn{background:color-mix(in srgb,var(--warn) 18%,transparent)}
 </style></head><body><main>
 <h1>استوديو الجزيرة 360</h1>
-<div class="muted">الحلقات المفهرسة: التفريغ بالتوقيت، ونقاط الإعلانات المقترحة (الأحمر = محتوى حساس للمعلنين). الحلقات الجديدة تُفهرس تلقائيًا كل ساعة.</div>
+<div class="muted">الحلقات المفهرسة: التفريغ بالتوقيت وترجمته، والفصول، ونقاط الإعلانات المقترحة (الأحمر = محتوى حساس للمعلنين). الحلقات الجديدة تُفهرس تلقائيًا كل ساعة. · <a href="${base}/studio/guests">قاعدة بيانات الضيوف ←</a></div>
 <div class="card"><table><thead><tr><th>الحلقة</th><th>المدة</th><th>التفريغ</th><th>نقاط الإعلانات</th><th>الحالة</th></tr></thead>
 <tbody>${rows || '<tr><td colspan="5" class="muted">لا توجد حلقات مفهرسة بعد.</td></tr>'}</tbody></table></div>
 </main></body></html>`;

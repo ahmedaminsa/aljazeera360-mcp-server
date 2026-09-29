@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from typing import Optional
 from datetime import datetime, timedelta
@@ -3794,10 +3795,12 @@ async def search_video_index(query: str, kind: str = "all", limit: int = 40) -> 
 
     Args:
         query: Name, topic or phrase (Arabic or English)
-        kind: all | person | chapter | topic | keyword | onscreen | transcript
+        kind: all | people (guests + mentions) | guest | mention | chapter | topic | keyword |
+            onscreen | transcript | transcript_en (English translation)
         limit: Max matches (default 40)
     """
-    kind = kind if kind in ("all", "person", "chapter", "topic", "keyword", "onscreen", "transcript") else "all"
+    kind = kind if kind in ("all", "person", "guest", "mention", "people", "chapter", "topic", "keyword",
+                            "onscreen", "transcript", "transcript_en") else "all"
     limit = _bound(limit, 1, 200, 40)
     try:
         res = await video_intel.index.search(query, kind, limit)
@@ -3889,10 +3892,10 @@ async def _platform_subtitles(video_id: int, language: str = "ar") -> tuple[list
     return cues, f"platform subtitles ({track.get('language')}, {track.get('format')})", tracks
 
 
-async def _saved_transcript(video_id: int) -> tuple[list, Optional[str]]:
-    """(cues with word timings, source) from the video index."""
+async def _saved_transcript(video_id: int, kind: str = "transcript") -> tuple[list, Optional[str]]:
+    """(cues with word timings, source) from the video index; kind transcript_<lang> for translations."""
     saved = await video_intel.index.get(video_id, words=True)
-    ms = sorted((m for m in saved.get("moments", []) if m.get("kind") == "transcript"), key=lambda m: m["t_sec"])
+    ms = sorted((m for m in saved.get("moments", []) if m.get("kind") == kind), key=lambda m: m["t_sec"])
     cues = []
     for i, m in enumerate(ms):
         words = m.get("words") or []
@@ -3903,6 +3906,8 @@ async def _saved_transcript(video_id: int) -> tuple[list, Optional[str]]:
         return [], None
     data = (saved.get("analysis") or {}).get("data")
     data = json.loads(data) if isinstance(data, str) else (data or {})
+    if kind != "transcript":
+        return cues, f"saved translation ({kind.split('_', 1)[1]}, machine translated)"
     return cues, f"saved transcript ({data.get('transcript_source') or 'Whisper'})"
 
 
@@ -3947,7 +3952,11 @@ async def get_transcript(video_id: int, language: str = "ar", format: str = "tex
         head = {"video_id": meta["id"], "title": meta["title"], "series": meta["series"],
                 "duration": format_duration(meta.get("duration")), "watch_url": meta["watch_url"]}
         cues, source, tracks = await _platform_subtitles(meta["id"], language)
-        if not cues:
+        if cues and language != "ar" and f"({language}" not in (source or ""):
+            cues, source = [], None  # the platform file is another language; look for a translation
+        if not cues and language != "ar":
+            cues, source = await _saved_transcript(meta["id"], f"transcript_{language}")
+        if not cues and language in ("ar", ""):
             cues, source = await _saved_transcript(meta["id"])
         languages = sorted({f"{t.get('language')}:{t.get('format')}" for t in tracks})
         if not cues:
@@ -3973,8 +3982,10 @@ async def get_transcript(video_id: int, language: str = "ar", format: str = "tex
                "transcript": body}
         if shown < len(picked):
             out["next"] = f"Continue with start_minute={picked[shown]['start'] / 60:.2f}"
-        if source and source.startswith("saved") and STUDIO_URL:
+        if source and source.startswith("saved transcript") and STUDIO_URL:
             out["downloads"] = _downloads(meta["id"])
+        elif source and source.startswith("saved translation") and STUDIO_URL:
+            out["downloads"] = {f: f"{STUDIO_URL}/{meta['id']}.{language}.{f}" for f in ("srt", "vtt", "txt")}
         return json.dumps(out, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"get_transcript {video_id}: {e}")
@@ -4117,7 +4128,7 @@ async def get_social_pack(video_id: int, quotes: int = 8) -> list:
             "video_id": meta["id"], "title": meta["title"], "series": meta["series"],
             "episode_number": meta["episode_number"], "duration": format_duration(meta.get("duration")),
             "watch_url": meta["watch_url"], "platform_description": meta["description"],
-            "analysis": {k: data.get(k) for k in ("summary", "chapters", "people", "topics", "keywords",
+            "analysis": {k: data.get(k) for k in ("summary", "chapters", "people", "guests", "topics", "keywords",
                                                   "on_screen_text") if data.get(k)},
             "transcript_source": source,
             "quote_candidates": q,
@@ -4225,6 +4236,278 @@ async def make_clip(video_id: int, start: str, end: str, quality: str = "720p") 
             os.remove(path)
 
 
+# -- Translation, chapters, guest database, name review (team) ----------------
+def _ident(meta: dict) -> dict:
+    return {k: meta[k] for k in ("id", "title", "series", "duration", "watch_url")}
+
+
+async def _analysis_data(video_id: int) -> dict:
+    saved = await video_intel.index.get(video_id)
+    data = (saved.get("analysis") or {}).get("data")
+    return json.loads(data) if isinstance(data, str) else (data or {})
+
+
+async def _chapter_thumbs(meta: dict, chapters: list[dict]) -> None:
+    """Upload a frame per chapter (for Vesper annotations) when the clip store is available."""
+    if not (video_intel.INDEX_URL and video_intel.INTERNAL_TOKEN) or not chapters:
+        return
+    frames = await _episode_frames(meta)
+    if not frames:
+        return
+
+    def render(jpeg: bytes) -> bytes:
+        from PIL import Image
+        import io as _io
+        img = Image.open(_io.BytesIO(jpeg)).convert("RGB").resize((1280, 720), Image.LANCZOS)
+        buf = _io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+
+    async with httpx.AsyncClient(timeout=60) as http:
+        for c in chapters:
+            ts, jpeg = min(frames, key=lambda f: abs(f[0] - (c["start_sec"] + 3)))
+            try:
+                body = await asyncio.to_thread(render, jpeg)
+                resp = await http.post(f"{video_intel.INDEX_URL}/internal/clip",
+                                       params={"name": f"aj360-{meta['id']}-{c['start_sec']}.jpg", "kind": "frame"},
+                                       content=body, headers={"x-internal-token": video_intel.INTERNAL_TOKEN,
+                                                              "content-type": "image/jpeg"})
+                resp.raise_for_status()
+                c["thumb"] = resp.json()["url"]
+            except Exception as e:
+                logger.info(f"chapter frame {meta['id']}@{c['start_sec']}: {e}")
+
+
+async def _enrich(meta: dict, refresh: bool = False) -> dict:
+    """Guests, misheard names and chapters for an episode, cached in the index."""
+    data = await _analysis_data(meta["id"])
+    if not refresh and data.get("enriched_at"):
+        return data
+    cues, _ = await _saved_transcript(meta["id"])
+    if not cues:
+        cues, _, _ = await _platform_subtitles(meta["id"])
+    if not cues:
+        raise ValueError("No transcript yet: run listen_to_video first.")
+    res = await studio.analyse_transcript(cues, meta)
+    await _chapter_thumbs(meta, res["chapters"])
+    label = lambda p: p["name"] + (f" ({p['name_en']})" if p.get("name_en") else "") + (f" — {p['role']}" if p.get("role") else "")  # noqa: E731
+    moments = [{"t_sec": p["first_at_sec"], "kind": "guest" if p["type"] != "mentioned" else "mention",
+                "text": label(p), "norm": video_intel.normalize(label(p))} for p in res["people"]]
+    moments += [{"t_sec": c["start_sec"], "kind": "chapter", "text": c["title"],
+                 "norm": video_intel.normalize(c["title"])} for c in res["chapters"]]
+    stamp = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    update = {"guests": res["people"], "name_fixes": res["name_fixes"], "chapters": res["chapters"],
+              "enriched_at": stamp}
+    await video_intel.index.save(_ident(meta), update, ["guest", "mention", "chapter"], moments)
+    return {**data, **update}
+
+
+@seo_tool(annotations=ToolAnnotations(title="Translate Transcript (ترجمة التفريغ)", readOnlyHint=False,
+                                      destructiveHint=False, idempotentHint=True))
+@track_request("translate_transcript")
+async def translate_transcript(video_id: int, language: str = "en") -> str:
+    """
+    Translate an episode's saved Arabic transcript into subtitles in another language
+    (English by default; also fr, es, tr), keeping the original timing. The translation is
+    saved (get_transcript with the same language returns it, search_video_index finds it)
+    and exported as SRT/VTT ready to add in Vesper DVE as a subtitle track. Needs a
+    transcript first (listen_to_video). A 25-minute episode takes about a minute.
+
+    ترجمة تفريغ الحلقة للإنجليزية (أو لغة أخرى) بنفس التوقيت، كملف ترجمة جاهز لـ Vesper.
+
+    Args:
+        video_id: Video ID
+        language: en | fr | es | tr (default en)
+    """
+    language = language if language in studio.LANGUAGES else "en"
+    try:
+        if not studio.llm_available():
+            return json.dumps({"error": "Translation is not configured on this server."}, ensure_ascii=False)
+        meta = await _video_meta(video_id)
+        cues, source = await _saved_transcript(meta["id"])
+        if not cues:
+            return json.dumps({"error": "No saved transcript yet: run listen_to_video first.",
+                               "video_id": meta["id"]}, ensure_ascii=False)
+        out = await studio.translate_cues(cues, language, meta["title"])
+        kind = f"transcript_{language}"
+        await video_intel.index.save(_ident(meta), {f"translated_{language}": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+                                     [kind], [{"t_sec": int(c["start"]), "kind": kind, "text": c["text"],
+                                               "norm": video_intel.normalize(c["text"]),
+                                               "words": [[c["start"], c["end"], ""]]} for c in out])
+        missing = sum(1 for c in out if not c["translated"])
+        res = {"video_id": meta["id"], "title": meta["title"], "language": studio.LANGUAGES[language],
+               "lines": len(out), "untranslated_lines": missing,
+               "preview": "\n".join(f"[{video_intel.fmt_ts(c['start'])}] {c['text']}" for c in out[:12])}
+        if STUDIO_URL:
+            res["downloads"] = {"srt": f"{STUDIO_URL}/{meta['id']}.{language}.srt",
+                                "vtt": f"{STUDIO_URL}/{meta['id']}.{language}.vtt",
+                                "text": f"{STUDIO_URL}/{meta['id']}.{language}.txt?view=1"}
+            res["vesper_csv_column"] = {f"subtitle.{'en-GB' if language == 'en' else language}":
+                                        f"{STUDIO_URL}/{meta['id']}.{language}.vtt|{studio.LANGUAGES[language]}"}
+        return json.dumps(res, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"translate_transcript {video_id}: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@seo_tool(annotations=ToolAnnotations(title="Generate Chapters (فصول الحلقة)", readOnlyHint=False,
+                                      destructiveHint=False, idempotentHint=True))
+@track_request("generate_chapters")
+async def generate_chapters(video_id: int, refresh: bool = False) -> str:
+    """
+    Split an episode into chapters (where the subject changes) from its transcript, with a
+    short Arabic title and a frame for each. Returns them ready for the platform as Vesper
+    DVE annotations (timeline marks with titles; the batch-CSV columns
+    annotations.<milliseconds> = image|title), as a YouTube chapter list, and saved to the
+    index. Also finds the guests and misheard names in the same pass (see find_guests,
+    review_names). Needs a transcript first (listen_to_video).
+
+    تقسيم الحلقة لفصول بعناوين وصور، جاهزة لـ Vesper (Annotations) ويوتيوب.
+
+    Args:
+        video_id: Video ID
+        refresh: Analyse again even if chapters were already generated
+    """
+    try:
+        meta = await _video_meta(video_id)
+        data = await _enrich(meta, refresh)
+        chapters = data.get("chapters") or []
+        res = {"video_id": meta["id"], "title": meta["title"], "watch_url": meta["watch_url"],
+               "chapters": chapters, "youtube": studio.youtube_chapters(chapters),
+               "vesper_annotations_csv_columns": {f"annotations.{c['start_sec'] * 1000}":
+                                                  f"{c.get('thumb', '')}|{c['title']}" for c in chapters},
+               "how_to_publish": "DVE: Edit Video → Annotate Video → Create Annotation for each chapter, "
+                                 "or paste these columns into the batch update CSV for this video."}
+        if STUDIO_URL:
+            res["downloads"] = {"youtube": f"{STUDIO_URL}/{meta['id']}-chapters.txt?view=1",
+                                "vesper_csv": f"{STUDIO_URL}/{meta['id']}-dve.csv"}
+        return json.dumps(res, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"generate_chapters {video_id}: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@seo_tool(annotations=ToolAnnotations(title="Find Guests (قاعدة بيانات الضيوف)", readOnlyHint=True))
+@track_request("find_guests")
+async def find_guests(query: str = "", include_mentions: bool = True, limit: int = 50) -> str:
+    """
+    The guest database: every person who appeared in or was named in an indexed episode,
+    with their role, the episodes and the time they first appear. With a query (a name,
+    in Arabic or English, or a role such as «وزير» or «عالم نووي»), returns the matching
+    people; without one, the directory sorted by number of episodes.
+
+    قاعدة بيانات الضيوف: مين ظهر أو اتذكر في أي حلقة، بدوره وتوقيته.
+
+    Args:
+        query: Name or role to look for (empty = full directory)
+        include_mentions: Also include people who were only mentioned, not guests (default true)
+        limit: Max people returned (default 50)
+    """
+    limit = _bound(limit, 1, 200, 50)
+    try:
+        res = await video_intel.index.search(query or "", "people", 2000)
+        people: dict = {}
+        for r in res.get("results", []):
+            if r["kind"] == "mention" and not include_mentions:
+                continue
+            name = r["text"].split(" — ")[0]
+            key = studio._strip_titles(re.sub(r"\s*\(.*?\)", "", name))
+            p = people.setdefault(key, {"name": name, "roles": [], "appeared_in": 0, "mentioned_in": 0,
+                                        "episodes": []})
+            role = r["text"].split(" — ", 1)[1] if " — " in r["text"] else ""
+            if role and role not in p["roles"]:
+                p["roles"].append(role)
+            if any(e["video_id"] == r["video_id"] for e in p["episodes"]):
+                continue
+            p["appeared_in" if r["kind"] in ("guest", "person") else "mentioned_in"] += 1
+            p["episodes"].append({"video_id": r["video_id"], "title": r.get("title"), "series": r.get("series"),
+                                  "at": video_intel.fmt_ts(r["t_sec"]),
+                                  "as": "guest" if r["kind"] in ("guest", "person") else "mentioned",
+                                  "watch_url": r.get("watch_url")})
+        ranked = sorted(people.values(), key=lambda p: (-(p["appeared_in"] * 2 + p["mentioned_in"]), p["name"]))
+        out = {"query": query, "people": ranked[:limit], "total_people": len(people)}
+        if STUDIO_URL:
+            out["directory_page"] = f"{STUDIO_URL}/guests"
+        if not people:
+            out["hint"] = "Guests are extracted by generate_chapters (and automatically for new episodes)."
+        return json.dumps(out, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"find_guests: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@seo_tool(annotations=ToolAnnotations(title="Review Names (مراجعة الأسماء)", readOnlyHint=True))
+@track_request("review_names")
+async def review_names(video_id: int, refresh: bool = False) -> str:
+    """
+    List proper names that speech recognition probably misheard in an episode's
+    transcript, each with the suggested correct spelling, how often it occurs, the time and
+    the line it is in, and a confidence level, so an editor can check them quickly.
+    Approve the ones that are right with fix_transcript_names.
+
+    مراجعة الأسماء اللي Whisper غلط فيها، مع التصحيح المقترح ومكانها.
+
+    Args:
+        video_id: Video ID
+        refresh: Analyse again even if already reviewed
+    """
+    try:
+        meta = await _video_meta(video_id)
+        data = await _enrich(meta, refresh)
+        cues, _ = await _saved_transcript(meta["id"])
+        fixes = []
+        for f in data.get("name_fixes") or []:
+            hits = [c for c in cues if f["heard"] in c["text"]]
+            fixes.append({**f, "at": video_intel.fmt_ts(hits[0]["start"] if hits else f.get("at_sec", 0)),
+                          "occurrences": sum(c["text"].count(f["heard"]) for c in hits),
+                          "line": hits[0]["text"] if hits else None})
+        return json.dumps({"video_id": meta["id"], "title": meta["title"],
+                           "suggested_fixes": [f for f in fixes if f["occurrences"]],
+                           "not_found_in_text": [f["heard"] for f in fixes if not f["occurrences"]],
+                           "next": "Apply the approved ones with fix_transcript_names."}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"review_names {video_id}: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+@seo_tool(annotations=ToolAnnotations(title="Fix Transcript Names (تصحيح الأسماء)", readOnlyHint=False,
+                                      destructiveHint=False, idempotentHint=True))
+@track_request("fix_transcript_names")
+async def fix_transcript_names(video_id: int, corrections: list[dict]) -> str:
+    """
+    Correct misheard names in an episode's saved transcript everywhere they occur (text
+    and word timings), e.g. after review_names. Exports, search and translations then use
+    the corrected spelling (translate again to refresh a translation).
+
+    تصحيح الأسماء في التفريغ المحفوظ في كل مكان تظهر فيه.
+
+    Args:
+        video_id: Video ID
+        corrections: [{"heard": "مردخايف عنونه", "correct": "مردخاي فعنونو"}]
+    """
+    try:
+        fixes = [{"heard": str(c.get("heard", "")).strip(), "correct": str(c.get("correct", "")).strip()}
+                 for c in corrections or [] if isinstance(c, dict)]
+        fixes = [f for f in fixes if f["heard"] and f["correct"]][:50]
+        if not fixes:
+            return json.dumps({"error": "corrections must be a list of {heard, correct}"}, ensure_ascii=False)
+        meta = await _video_meta(video_id)
+        cues, _ = await _saved_transcript(meta["id"])
+        if not cues:
+            return json.dumps({"error": "No saved transcript for this episode."}, ensure_ascii=False)
+        fixed, n = studio.apply_fixes(cues, fixes)
+        if n:
+            await video_intel.index.save(_ident(meta), {"names_fixed": fixes}, ["transcript"],
+                                         [{"t_sec": int(c["start"]), "kind": "transcript", "text": c["text"],
+                                           "norm": video_intel.normalize(c["text"]), "words": c["words"]}
+                                          for c in fixed])
+        return json.dumps({"video_id": meta["id"], "title": meta["title"], "replacements": n,
+                           "corrections": fixes}, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"fix_transcript_names {video_id}: {e}")
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
 # -- Daily auto-indexing ------------------------------------------------------
 AUTO_INDEX_SECTIONS = ["AJ360-Originals", "AJA", "AJD", "Atheer", "AJ-Plus"]
 AUTO_INDEX_PER_RUN = int(os.environ.get("AJ360_AUTO_INDEX_PER_RUN", "2") or 2)
@@ -4257,8 +4540,14 @@ async def _auto_index_one(video_id: int) -> str:
             if "error" in res:
                 raise RuntimeError(res["error"])
         ads = await _compute_ad_breaks(meta)
-        await video_intel.index.save(ident, {"ad_breaks": ads["breaks"],
-                                             "auto_index": {"status": "done", "at": stamp}}, [], [])
+        await video_intel.index.save(ident, {"ad_breaks": ads["breaks"]}, [], [])
+        if studio.llm_available():
+            for step in (lambda: _enrich(meta, True), lambda: translate_transcript(meta["id"], "en")):
+                try:  # chapters/guests/names and English subtitles are extras: never fail the run
+                    await step()
+                except Exception as e:
+                    logger.info(f"auto-index extra {video_id}: {e}")
+        await video_intel.index.save(ident, {"auto_index": {"status": "done", "at": stamp}}, [], [])
         return "done"
     except video_intel.ProtectedAudio:
         await video_intel.index.save(ident, {"auto_index": {"status": "protected", "at": stamp}}, [], [])
