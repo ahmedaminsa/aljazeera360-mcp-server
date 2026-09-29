@@ -163,6 +163,8 @@ Chapters, guests and name review run on **Llama 3.3 70B** (Workers AI), chosen o
 
 **Automatic indexing.** Every hour the Worker asks the team container to transcribe the newest episodes of the main channels (2 per run) and compute their ad breaks, so the index stays current without anyone asking. DRM-protected episodes are marked and skipped.
 
+**Studio password.** Besides the team token in the URL, the studio pages and transcript text ask for a team password once (remembered 30 days). Set its hash with `wrangler secret put STUDIO_PASSWORD_HASH` as `<salt hex>:<PBKDF2-SHA256, 100k iterations, hex>`. Subtitle and CSV files (`.srt`, `.vtt`, `.csv`) stay token-only, because Vesper fetches them from the batch CSV.
+
 **Studio page and exports.** `/team/<token>/studio` lists the indexed episodes with their transcript (and English translation), chapters and suggested ad breaks (sensitive ones in red); `/team/<token>/studio/guests` is the guest database. Chapters export as a YouTube list (`<video_id>-chapters.txt`) and as one DVE batch-update CSV row with the annotations and subtitle tracks (`<video_id>-dve.csv`); translations as `<video_id>.en.srt|.vtt|.txt`. Each transcript downloads as text, SRT or VTT from `/team/<token>/studio/<video_id>.txt|.srt|.vtt`, and the ad breaks from `<video_id>-ads.csv`. On the team endpoint, `listen_to_video`, `get_transcript`, `get_video_analysis`, `suggest_ad_breaks` and `get_social_pack` return these links, so the full text reaches the team as a file instead of being pasted into the chat.
 
 Prompts on the team endpoint: `social_media_pack` and `contextual_ads`.

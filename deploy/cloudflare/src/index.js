@@ -525,7 +525,73 @@ th{font-size:13px;color:var(--muted);font-weight:600}a{color:inherit}
     { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex" } });
 }
 
+// ---------------------------------------------------------------------------
+// Studio password (second layer on top of the team token in the URL).
+// STUDIO_PASSWORD_HASH secret = "<salt hex>:<PBKDF2-SHA256 100k hex>". Unset = no password.
+// Subtitle/CSV files (.srt .vtt .csv) stay token-only: Vesper fetches them from the batch CSV.
+// ---------------------------------------------------------------------------
+const STUDIO_COOKIE = "aj360studio";
+const STUDIO_DAYS = 30;
+const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+const unhex = (h) => new Uint8Array(h.match(/../g).map((b) => parseInt(b, 16)));
+
+async function pbkdf2(password, saltHex) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+  return hex(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: unhex(saltHex), iterations: 100000 }, key, 256));
+}
+
+async function studioSession(env) {  // cookie value: HMAC of the stored hash, changes when the password does
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.STUDIO_PASSWORD_HASH), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return hex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode("aj360-studio-v1")));
+}
+
+function safeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
+
+function loginPage(base, next, failed) {
+  return studioShell("استوديو الجزيرة 360", `<form method="post" action="${base}/studio/login" style="max-width:360px;margin-top:24px">
+<input type="hidden" name="next" value="${esc(next)}">
+<p class="muted">أدخل كلمة مرور الفريق.</p>
+<input type="password" name="password" autofocus required autocomplete="current-password" aria-label="كلمة المرور"
+ style="width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--ink);font:inherit">
+${failed ? '<p style="color:var(--warn)">كلمة المرور غير صحيحة.</p>' : ""}
+<button style="margin-top:12px;width:100%;padding:12px;border:0;border-radius:10px;background:var(--acc);color:#0b1a10;font:600 15px system-ui">دخول</button>
+</form>`);
+}
+
+async function studioGate(request, url, env, base, rest) {
+  if (!env.STUDIO_PASSWORD_HASH) return null;
+  if (/\.(srt|vtt|csv)$/.test(rest)) return null;
+  const session = await studioSession(env);
+  if (rest === "/login" && request.method === "POST") {
+    const ip = request.headers.get("cf-connecting-ip") || "unknown";
+    if (env.TEAM_LIMITER && !(await env.TEAM_LIMITER.limit({ key: `login:${ip}` })).success) {
+      return new Response("Too many attempts. Try again in a minute.", { status: 429 });
+    }
+    const form = await request.formData();
+    const next = String(form.get("next") || "");
+    const target = next.startsWith(`${base}/studio`) ? next : `${base}/studio`;
+    const [salt, hash] = env.STUDIO_PASSWORD_HASH.split(":");
+    if (!safeEqual(await pbkdf2(String(form.get("password") || ""), salt), hash)) {
+      return new Response(loginPage(base, target, true).body, { status: 401, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+    }
+    return new Response(null, { status: 303, headers: {
+      location: target, "cache-control": "no-store",
+      "set-cookie": `${STUDIO_COOKIE}=${session}; Path=${base}/studio; Max-Age=${STUDIO_DAYS * 86400}; HttpOnly; Secure; SameSite=Lax` } });
+  }
+  const cookie = (request.headers.get("cookie") || "").split(/;\s*/).find((c) => c.startsWith(`${STUDIO_COOKIE}=`));
+  if (cookie && safeEqual(cookie.slice(STUDIO_COOKIE.length + 1), session)) return null;
+  return new Response(loginPage(base, url.pathname + url.search, false).body, { status: 401, headers: {
+    "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex" } });
+}
+
 async function studio(request, url, env, base, rest) {
+  const gate = await studioGate(request, url, env, base, rest);
+  if (gate) return gate;
   const db = env.ANALYTICS_DB;
   await migrate(db);
   if (rest === "/guests") return guestsPage(env, base);
