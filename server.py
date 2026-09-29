@@ -4413,8 +4413,9 @@ async def find_guests(query: str = "", include_mentions: bool = True, limit: int
             name = r["text"].split(" — ")[0]
             en = re.search(r"\(([^)]*)\)", name)
             key = studio.person_key(re.sub(r"\s*\(.*?\)", "", name), en.group(1) if en else None)
-            p = people.setdefault(key, {"name": name, "roles": [], "appeared_in": 0, "mentioned_in": 0,
-                                        "episodes": []})
+            twin = next((k for k, q in people.items() if en and studio.same_person({"name_en": en.group(1)}, q)), None)
+            p = people.setdefault(twin or key, {"name": name, "name_en": en.group(1) if en else "", "roles": [],
+                                                "appeared_in": 0, "mentioned_in": 0, "episodes": []})
             role = r["text"].split(" — ", 1)[1] if " — " in r["text"] else ""
             if role and role not in p["roles"]:
                 p["roles"].append(role)

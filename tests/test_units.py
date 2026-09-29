@@ -462,7 +462,8 @@ def test_model_json_is_parsed_from_fenced_or_chatty_replies():
 def test_windows_merge_people_fixes_and_spaced_chapters():
     parts = [
         {"people": [{"name": "الدكتور جيرالد بول", "role": "عالم", "type": "mentioned", "first_at": "14:40"}],
-         "name_fixes": [{"heard": "مردخايف عنونه", "correct": "مردخاي فعنونو", "at": "19:36"}],
+         "names": [{"written": "مردخايف عنونه", "standard": "مردخاي فعنونو", "misheard": True, "at": "19:36"},
+                   {"written": "جرارد بول", "standard": "جيرالد بول", "misheard": False, "at": "17:13"}],
          "chapters": [{"start": "00:30", "title": "البداية"}, {"start": "01:10", "title": "قريب جدًا"},
                       {"start": "07:00", "title": "مشبك الورق"}]},
         {"people": [{"name": "جيرالد بول", "name_en": "Gerald Bull", "type": "guest", "first_at": "12:00"},
@@ -473,9 +474,10 @@ def test_windows_merge_people_fixes_and_spaced_chapters():
     ]
     m = studio.merge_analysis(parts, 1500)
     assert len(m["people"]) == 2  # the first had no English name yet
+    assert len(studio.merge_similar([{"name_en": "Gerald Bull"}, {"name_en": "Gerard Bull"}, {"name_en": "Gerald Ford"}])) == 2
     p = [x for x in m["people"] if x["name_en"]][0]
     assert p["type"] == "guest" and p["first_at"] == "12:00" and p["name_en"] == "Gerald Bull"
-    assert [f["correct"] for f in m["name_fixes"]] == ["مردخاي فعنونو"]
+    assert [(f["correct"], f["confidence"]) for f in m["name_fixes"]] == [("مردخاي فعنونو", "high"), ("جيرالد بول", "low")]
     assert [(c["start"], c["title"]) for c in m["chapters"]] == [("00:00", "البداية"), ("07:00", "مشبك الورق")]
 
 

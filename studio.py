@@ -512,13 +512,13 @@ ANALYSE_PROMPT = """You analyse part of an Arabic TV programme transcript produc
 proper names may be misspelled. Programme: «{title}» from «{series}». {description}
 Return ONLY JSON:
 {{"people":[{{"name":"correct full name in Arabic","name_en":"English spelling","role":"who they are, short, in Arabic","type":"guest|presenter|mentioned","first_at":"mm:ss"}}],
- "name_fixes":[{{"heard":"the wrong spelling exactly as written in the transcript","correct":"correct Arabic spelling","at":"mm:ss","confidence":"high|medium|low"}}],
+ "names":[{{"written":"a proper name EXACTLY as written in the transcript","standard":"its standard Arabic spelling","misheard":true,"at":"mm:ss"}}],
  "chapters":[{{"start":"mm:ss","title":"short Arabic chapter title (2-6 words)"}}]}}
-Rules: people = real named individuals only. type is guest/presenter only if they speak in the programme,
-otherwise mentioned. name_fixes: only proper names whose written form is NOT a valid spelling of that name, because speech
-recognition misheard it (e.g. two words fused, wrong letters). Never flag: a short or partial form of a name
-(«براون» for «فيرنر فون براون»), dialect spelling, or ordinary words. If unsure, leave it out.
-chapters = where the subject changes, at most one per 2 minutes. Times come from the [mm:ss] marks."""
+Rules: people = real named individuals only; type is guest/presenter only if they speak in the programme,
+otherwise mentioned. names = every proper name of a person, place or organisation in this part, copied
+character for character as written; misheard = true when the written form is a speech-recognition error
+(fused or split words, wrong letters), false when it is just a dialect or short form. chapters = where the
+subject changes, at most one per 2 minutes. Times come from the [mm:ss] marks."""
 
 
 def _strip_titles(name: str) -> str:
@@ -533,6 +533,26 @@ def person_key(name: str, name_en: Optional[str] = None) -> str:
     """Dedup key: the English spelling when known (Arabic spellings of foreign names vary)."""
     en = re.sub(r"[^a-z ]", "", (name_en or "").lower()).strip()
     return f"en:{en}" if en else _strip_titles(name)
+
+
+def same_person(a: dict, b: dict) -> bool:
+    """«Gerald Bull» / «Gerard Bull»: same surname and nearly the same English name."""
+    from difflib import SequenceMatcher
+    ea, eb = (a.get("name_en") or "").lower().split(), (b.get("name_en") or "").lower().split()
+    if not ea or not eb or ea[-1] != eb[-1]:
+        return False
+    return SequenceMatcher(None, " ".join(ea), " ".join(eb)).ratio() >= 0.8
+
+
+def merge_similar(people: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    for p in people:
+        twin = next((q for q in out if same_person(p, q)), None)
+        if twin is None:
+            out.append(p)
+        elif p.get("type") in ("guest", "presenter"):
+            twin["type"] = p["type"]
+    return out
 
 
 def merge_analysis(parts: list[dict], duration: float) -> dict:
@@ -559,13 +579,16 @@ def merge_analysis(parts: list[dict], duration: float) -> dict:
             if not cur[k] and entry[k]:
                 cur[k] = entry[k]
     fixes: dict[str, dict] = {}
-    for f in (x for part in parts for x in part.get("name_fixes") or [] if isinstance(x, dict)):
-        heard, correct = (f.get("heard") or "").strip(), (f.get("correct") or "").strip()
+    for f in (x for part in parts for x in (part.get("names") or []) + (part.get("name_fixes") or [])
+              if isinstance(x, dict)):
+        heard = (f.get("written") or f.get("heard") or "").strip()
+        correct = (f.get("standard") or f.get("correct") or "").strip()
         nh, nc = normalize(heard), normalize(correct)
         # A longer form of the same name is not a correction («براون» → «فيرنر فون براون»).
         if heard and correct and nh != nc and nh not in nc and heard not in fixes:
+            misheard = f.get("misheard") is True or f.get("confidence") == "high"
             fixes[heard] = {"heard": heard, "correct": correct, "at_sec": parse_ts(f.get("at", 0)),
-                            "confidence": f.get("confidence") if f.get("confidence") in ("high", "medium", "low") else "medium"}
+                            "confidence": "high" if misheard else "low"}
     chapters = []
     for c in sorted((x for part in parts for x in part.get("chapters") or [] if isinstance(x, dict) and x.get("title")),
                     key=lambda c: parse_ts(c.get("start", 0))):
@@ -581,10 +604,11 @@ def merge_analysis(parts: list[dict], duration: float) -> dict:
             chapters.insert(0, {"start_sec": 0, "title": "مقدمة"})
     for c in chapters:
         c["start"] = fmt_ts(c["start_sec"])
-    ppl = sorted(people.values(), key=lambda p: p["first_at_sec"])
+    ppl = merge_similar(sorted(people.values(), key=lambda p: p["first_at_sec"]))
     for p in ppl:
         p["first_at"] = fmt_ts(p["first_at_sec"])
-    return {"people": ppl, "name_fixes": sorted(fixes.values(), key=lambda f: f["at_sec"]), "chapters": chapters}
+    return {"people": ppl, "name_fixes": sorted(fixes.values(), key=lambda f: (f["confidence"] != "high", f["at_sec"])),
+            "chapters": chapters}
 
 
 async def analyse_transcript(cues: list[dict], meta: dict) -> dict:
