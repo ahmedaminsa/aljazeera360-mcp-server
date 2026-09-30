@@ -668,7 +668,7 @@ th{font-size:13px;color:var(--muted);font-weight:600}a{color:inherit}
 .chip.warn{background:color-mix(in srgb,var(--warn) 18%,transparent)}
 </style></head><body><main>
 <h1>استوديو الجزيرة 360</h1>
-<div class="muted">الحلقات المفهرسة: التفريغ بالتوقيت وترجمته، والفصول، ونقاط الإعلانات المقترحة (الأحمر = محتوى حساس للمعلنين). الحلقات الجديدة تُفهرس تلقائيًا كل ساعة. · <a href="${base}/studio/guests">قاعدة بيانات الضيوف ←</a></div>
+<div class="muted">الحلقات المفهرسة: التفريغ بالتوقيت وترجمته، والفصول، ونقاط الإعلانات المقترحة (الأحمر = محتوى حساس للمعلنين). · <a href="${base}/studio/guests">قاعدة بيانات الضيوف ←</a></div>
 <div class="card"><table><thead><tr><th>الحلقة</th><th>المدة</th><th>التفريغ</th><th>نقاط الإعلانات</th><th>الحالة</th></tr></thead>
 <tbody>${rows || '<tr><td colspan="5" class="muted">لا توجد حلقات مفهرسة بعد.</td></tr>'}</tbody></table></div>
 </main></body></html>`;
@@ -677,22 +677,12 @@ th{font-size:13px;color:var(--muted);font-weight:600}a{color:inherit}
 
 // Retention promised in the privacy policy (/privacy): 180 days.
 const RETENTION_DAYS = 180;
-const AUTO_INDEX_CRON = "7 * * * *";
 
 export default {
   // Daily cron (wrangler.jsonc "triggers"): delete analytics past retention.
   async scheduled(event, env, ctx) {
-    // Hourly: index the newest episodes (transcript + ad breaks) on the team container.
-    if (event.cron === AUTO_INDEX_CRON) {
-      if (env.AJ360_INTERNAL_TOKEN && env.AJ360_ALLOWED_HOST) {
-        ctx.waitUntil(env.AJ360_TEAM_CONTAINER.getByName("mcp-team").fetch(new Request(
-          `https://${env.AJ360_ALLOWED_HOST}/jobs/auto-index`,
-          { method: "POST", headers: { "x-internal-token": env.AJ360_INTERNAL_TOKEN } }))
-          .then((r) => r.text()).then((t) => console.log("auto-index:", t))
-          .catch((err) => console.error("auto-index failed:", err.message)));
-      }
-      return;
-    }
+    // Daily only: clip cleanup + analytics retention. Indexing is on-demand
+    // (the tools, or a manual POST /jobs/auto-index), never on a schedule.
     ctx.waitUntil(deleteOldClips(env).then((n) => console.log(`clips: deleted ${n}`))
       .catch((err) => console.error("clip cleanup failed:", err.message)));
     if (!env.ANALYTICS_DB) return;

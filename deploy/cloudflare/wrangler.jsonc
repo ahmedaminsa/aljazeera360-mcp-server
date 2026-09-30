@@ -66,9 +66,8 @@
   "ai": { "binding": "AI" },
   // Clips made by make_clip (public by unguessable link, deleted after 7 days).
   "r2_buckets": [{ "binding": "CLIPS", "bucket_name": "aj360-clips" }],
-  // Daily: analytics retention + clip cleanup. Hourly: auto-index new episodes.
-  // (see scheduled() in src/index.js)
-  "triggers": { "crons": ["17 3 * * *", "7 * * * *"] },
+  // Daily: analytics retention + clip cleanup. Indexing is on-demand only.
+  "triggers": { "crons": ["17 3 * * *"] },
   "vars": {
     // MUST match the public hostname of this Worker, or the server's
     // DNS-rebinding protection rejects requests with 421.

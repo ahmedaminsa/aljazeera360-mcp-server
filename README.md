@@ -157,11 +157,11 @@ Once an episode is transcribed, the team endpoint turns it into ready work for t
 | `review_names` | Proper names speech recognition probably misheard, with the suggested spelling, count, time and line; *high* = recognition error, *low* = near spelling variant. |
 | `fix_transcript_names` | Applies the approved corrections to the saved transcript everywhere (text and word timings). |
 
-Chapters, guests and name review run on **Llama 3.3 70B** (Workers AI), chosen over Gemma 3, Mistral Small 3.1 and gpt-oss after a side-by-side test on an Arabic episode. New episodes get chapters, guests, name review and English subtitles during automatic indexing.
+Chapters, guests and name review run on **Llama 3.3 70B** (Workers AI), chosen over Gemma 3, Mistral Small 3.1 and gpt-oss after a side-by-side test on an Arabic episode. A manual index run also does chapters, guests, name review and English subtitles for each episode.
 
 **Exact seconds.** Whisper returns a time for every word. They are saved with the transcript, so `search_video_index` gives the exact second a word or phrase is spoken (`exact_sec`).
 
-**Automatic indexing.** Every hour the Worker asks the team container to transcribe the newest episodes of the main channels (2 per run) and compute their ad breaks, so the index stays current without anyone asking. DRM-protected episodes are marked and skipped.
+**On-demand indexing.** Transcription runs only when asked — through the tools, or a manual `POST /jobs/auto-index` (internal token) that transcribes, enriches and translates the newest not-yet-indexed episodes in the background. There is no transcription schedule, so Whisper cost is only spent on episodes someone wants. DRM-protected episodes are marked and skipped. The only scheduled job is a daily cleanup (clips + analytics retention).
 
 **Studio password.** Besides the team token in the URL, the studio pages and transcript text ask for a team password once (remembered 30 days). Set its hash with `wrangler secret put STUDIO_PASSWORD_HASH` as `<salt hex>:<PBKDF2-SHA256, 100k iterations, hex>`. Subtitle and CSV files (`.srt`, `.vtt`, `.csv`) stay token-only, because Vesper fetches them from the batch CSV.
 

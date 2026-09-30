@@ -4562,7 +4562,7 @@ async def _auto_index_one(video_id: int) -> str:
 
 
 async def auto_index_run(limit: int = AUTO_INDEX_PER_RUN) -> dict:
-    """Transcribe and ad-break the newest episodes that are not indexed yet."""
+    """Transcribe, enrich and translate the newest not-yet-indexed episodes. Run on demand."""
     if _auto_lock.locked():
         return {"skipped": "a run is already in progress"}
     async with _auto_lock:
@@ -4905,7 +4905,7 @@ async def api_recent(request: Request):
 
 @mcp.custom_route("/jobs/auto-index", methods=["POST"])
 async def auto_index_route(request: Request):
-    """Hourly from the Worker's cron: index the newest episodes in the background."""
+    """On demand: index the newest not-yet-indexed episodes in the background (no schedule)."""
     token = video_intel.INTERNAL_TOKEN
     if not token or request.headers.get("x-internal-token") != token:
         return JSONResponse({"error": "Not found"}, status_code=404)
