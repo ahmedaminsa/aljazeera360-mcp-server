@@ -1056,7 +1056,7 @@ async def run_diagnostics(report: str = "") -> str:
         # call to D1, which is how playback problems in real hosts get diagnosed.
         logger.info("view diagnostics: %s", report[:500])
         return json.dumps({"received": True}, ensure_ascii=False)
-    return json.dumps({
+    return _dump({
         "diagnostics": True,
         "checks": [
             "Protected video (Widevine / PlayReady / FairPlay) inside the app's sandbox",
@@ -1066,7 +1066,7 @@ async def run_diagnostics(report: str = "") -> str:
         "note": ("The checks run in the interactive view. In AI apps without interactive views, "
                  "videos open on aljazeera360.com."),
         "platform_url": PLATFORM_URL,
-    }, ensure_ascii=False, indent=2)
+    })
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Get Series Details (تفاصيل البرامج والسلاسل)", readOnlyHint=True), meta=tool_meta())
@@ -3662,8 +3662,8 @@ async def save_video_analysis(video_id: int, summary: str = "", chapters: Option
         res = await video_intel.index.save(
             {k: meta[k] for k in ("id", "title", "series", "duration", "watch_url")}, analysis,
             ["chapter", "person", "onscreen", "topic", "keyword"], moments)
-        return json.dumps({"saved": bool(res.get("saved")), "video_id": meta["id"], "title": meta["title"],
-                           "indexed_moments": len(moments)}, ensure_ascii=False, indent=2)
+        return _dump({"saved": bool(res.get("saved")), "video_id": meta["id"], "title": meta["title"],
+                           "indexed_moments": len(moments)})
     except Exception as e:
         logger.error(f"save_video_analysis {video_id}: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -3834,8 +3834,8 @@ async def search_video_index(query: str, kind: str = "all", limit: int = 40) -> 
                 match["exact_sec"] = round(exact, 2)
                 match["at"] = video_intel.fmt_ts(exact)
             g["matches"].append(match)
-        return json.dumps({"query": query, "kind": kind, "episodes": list(grouped.values()),
-                           "total_matches": len(res.get("results", []))}, ensure_ascii=False, indent=2)
+        return _dump({"query": query, "kind": kind, "episodes": list(grouped.values()),
+                           "total_matches": len(res.get("results", []))})
     except Exception as e:
         logger.error(f"search_video_index: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -3987,10 +3987,10 @@ async def get_transcript(video_id: int, language: str = "ar", format: str = "tex
             cues, source = await _saved_transcript(meta["id"])
         languages = sorted({f"{t.get('language')}:{t.get('format')}" for t in tracks})
         if not cues:
-            return json.dumps({**head, "available": False, "subtitle_tracks": languages,
+            return _dump({**head, "available": False, "subtitle_tracks": languages,
                                "note": "This episode has no subtitle file on the platform and no saved transcript. "
                                        "The team endpoint can create one with listen_to_video; "
-                                       "watch_video reads on-screen text."}, ensure_ascii=False, indent=2)
+                                       "watch_video reads on-screen text."})
 
         start = max(0.0, float(start_minute or 0)) * 60
         end = float(end_minute) * 60 if end_minute is not None else None
@@ -4251,10 +4251,10 @@ async def make_clip(video_id: int, start: str, end: str, quality: str = "720p") 
         size = os.path.getsize(path)
         name = f"aj360-{meta['id']}-{int(real)}-{int(e)}.mp4"
         url = await _store_clip(path, name)
-        return json.dumps({"video_id": meta["id"], "title": meta["title"], "clip_url": url,
+        return _dump({"video_id": meta["id"], "title": meta["title"], "clip_url": url,
                            "from": video_intel.fmt_ts(real), "to": video_intel.fmt_ts(e),
                            "seconds": round(e - real, 1), "quality": quality, "size_mb": round(size / 1e6, 1),
-                           "expires": "7 days", "watch_url": meta["watch_url"]}, ensure_ascii=False, indent=2)
+                           "expires": "7 days", "watch_url": meta["watch_url"]})
     except video_intel.ProtectedAudio:
         return json.dumps({"error": "This episode is DRM-protected, so it cannot be cut.",
                            "video_id": video_id}, ensure_ascii=False)
@@ -4493,10 +4493,10 @@ async def review_names(video_id: int, refresh: bool = False) -> str:
             fixes.append({**f, "at": video_intel.fmt_ts(hits[0]["start"] if hits else f.get("at_sec", 0)),
                           "occurrences": sum(c["text"].count(f["heard"]) for c in hits),
                           "line": hits[0]["text"] if hits else None})
-        return json.dumps({"video_id": meta["id"], "title": meta["title"],
+        return _dump({"video_id": meta["id"], "title": meta["title"],
                            "suggested_fixes": [f for f in fixes if f["occurrences"]],
                            "not_found_in_text": [f["heard"] for f in fixes if not f["occurrences"]],
-                           "next": "Apply the approved ones with fix_transcript_names."}, ensure_ascii=False, indent=2)
+                           "next": "Apply the approved ones with fix_transcript_names."})
     except Exception as e:
         logger.error(f"review_names {video_id}: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -4533,8 +4533,8 @@ async def fix_transcript_names(video_id: int, corrections: list[dict]) -> str:
                                          [{"t_sec": int(c["start"]), "kind": "transcript", "text": c["text"],
                                            "norm": video_intel.normalize(c["text"]), "words": c["words"]}
                                           for c in fixed])
-        return json.dumps({"video_id": meta["id"], "title": meta["title"], "replacements": n,
-                           "corrections": fixes}, ensure_ascii=False, indent=2)
+        return _dump({"video_id": meta["id"], "title": meta["title"], "replacements": n,
+                           "corrections": fixes})
     except Exception as e:
         logger.error(f"fix_transcript_names {video_id}: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -4623,7 +4623,7 @@ async def sections_resource() -> str:
 @mcp.resource("aljazeera360://about")
 async def about_resource() -> str:
     """Information about Al Jazeera 360 platform."""
-    return json.dumps({
+    return _dump({
         "name": "Al Jazeera 360",
         "name_ar": "الجزيرة 360",
         "tagline": "مشاهدة بلا قيود",
@@ -4637,7 +4637,7 @@ async def about_resource() -> str:
         "channels": ["الجزيرة العربية", "الجزيرة الوثائقية", "أثير", "AJ+ عربي"],
         "api_backend": "Vesper/Dice (IMG Arena)",
         "api_version": APP_VERSION,
-    }, ensure_ascii=False, indent=2)
+    })
 
 
 # ============================================================================
