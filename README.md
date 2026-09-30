@@ -54,8 +54,10 @@ The server ships with two tool profiles:
 
 | Profile | Tools | For whom | How |
 | :--- | :--- | :--- | :--- |
-| **Core** (default) | 8 discovery tools | End users asking AI assistants about content | Works out of the box |
-| **Full** | All 24 tools (+ SEO & analytics) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
+| **Core** (default) | 15 tools (discovery + video watching, transcripts, search & on-request view) | End users asking AI assistants about content | Works out of the box |
+| **Full** | All 42 tools (+ SEO, analytics, listening, ad breaks, social pack, clips, translation, chapters & guests) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
+
+On the hosted service, the public URL (`/mcp`) serves the **core** profile. The **full** profile is on a private team URL (`/team/<token>/mcp`) so the heavy analysis tools aren't open to the public or to directory crawlers. For Claude Code in this repo, set `AJ360_MCP_URL` to the team URL to get the SEO tools; without it, `.mcp.json` uses the public URL.
 
 A small default toolset keeps AI tool selection fast and accurate. Enable the full profile only if you need the SEO/analytics tools.
 
@@ -71,6 +73,109 @@ A small default toolset keeps AI tool selection fast and accurate. Enable the fu
 | `get_season_episodes` | Lists all episodes within a specific season |
 | `search_videos` | Full-text search across all content (Arabic & English), with optional content type filter |
 | `get_latest_episodes` | Returns the most recently published episodes from any section |
+| `play_video` | Opens the official Al Jazeera 360 player inside the chat (in AI apps that support interactive views); elsewhere returns the watch link |
+| `run_diagnostics` | Checks what the AI app allows inside the chat (protected video, embedding the official player, fullscreen) and shows the result in the view |
+
+### Interactive view (MCP Apps)
+
+In AI apps that support the [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps) extension (Claude, ChatGPT and others), the discovery tools render an interactive Arabic view inside the chat instead of plain text:
+
+| View | Opened by | What the user can do |
+| :--- | :--- | :--- |
+| **Catalog** | `search_videos`, `browse_section`, `get_trending_content`, `get_latest_episodes` | Thumbnail cards in rows, section chips, an in-view search box |
+| **Series** | `get_series_details`, `get_season_episodes` | Poster and description, season tabs, the episode list |
+| **Video** | `get_video_details` | Details card with *Watch here*, *Open on Al Jazeera 360*, *All episodes*, *Ask about it* |
+| **Player** | `play_video` | The official aljazeera360.com player embedded in the chat |
+
+The view uses the aljazeera360.com design system, read from the live site: the AlJazeera typeface (Regular and Bold), the black background with the platform's `#00B7D4` primary colour, the official logo, calligraphy title art on home banners, poster rows, 16:9 episode cards, season tabs and duration/date chips. It is right-to-left, and it stays in the site's dark look whatever the host's theme.
+
+Every click calls the server's own tools, and the view tells the model what the user is looking at, so follow-up questions have context.
+
+**About playback.** Some episodes are DRM-protected (Widevine / PlayReady; in a September 2026 sample, 1 of 25), stream tokens are bound to the requesting IP address, and the platform API only accepts browser requests from aljazeera360.com. So the player embeds the official page rather than a raw stream. Playback, sign-in, ads and analytics all stay on Al Jazeera 360's own player. Whether an AI app allows protected video inside its sandbox differs by app. When it doesn't, the view shows the cover image and a *Watch on Al Jazeera 360* button instead of a broken player.
+
+Clients without MCP Apps support ignore the view and get the same JSON as before. Set `AJ360_ENABLE_UI=0` to switch the view off entirely.
+
+### Features at a glance
+
+**For viewers**
+- Browse the home page inside the chat: hero banners, *Now showing*, *Latest episodes*, *Most watched* and the other editorial rows.
+- Search in Arabic or English from the view, or by asking the AI.
+- Open any programme to see all seasons and episodes, with duration and publish date.
+- Watch on the official player inside the chat, or in one click on aljazeera360.com.
+- Ask the AI about what's on screen: it knows which programme or episode is open.
+
+**For Al Jazeera 360**
+- Every play, sign-in, ad and view is counted by the official player and site analytics, because playback never leaves them.
+- Brand-consistent: same fonts, colours, logo and layout as the site and apps.
+- A new discovery channel: users of Claude, ChatGPT and other AI apps reach the catalogue without leaving the conversation.
+- Editorial choices carry over: the home banners and rows are the ones the team curates in Vesper.
+- Usage is measurable: the Worker logs which tools, searches and titles AI users open (see *Usage analytics*).
+
+**Technical**
+- Open standard (MCP Apps) and one codebase for every compatible AI app. No app-store submission per platform.
+- Safe by design: the view runs in the host's sandbox, may load only the platform's image and font hosts, and embeds only aljazeera360.com.
+- Backwards compatible: AI apps without UI support get the same JSON as before, and `AJ360_ENABLE_UI=0` turns the view off.
+- No build step: the view is one self-contained HTML file inside `mcp_apps.py`.
+
+### Interactive view on request
+
+The interactive view (the site's rows, programme and episode pages, and the player) opens **only when the user asks to see something**, through one tool, `show_on_screen` (`view` = home, section, latest, search, series, season, video or play). The other tools return data only, so answers stay short and fast and no cards fill the chat. Navigation inside the view goes through the same tool.
+
+### Video understanding
+
+`watch_video`, `get_transcript`, `search_video_index` and `get_video_analysis` are read-only and public. `save_video_analysis`, `listen_to_video` and `transcribe_audio` write to the index and use paid speech recognition, so they need `AJ360_ENABLE_SEO_TOOLS=1` (the team URL on the hosted service).
+
+The AI assistant can **see**, **read** and **hear** episodes, and every finding goes into a searchable index.
+
+| Tool | What it does |
+| :--- | :--- |
+| `watch_video` | Returns timestamped frames of an episode as images, so the assistant looks at it itself: scenes, presenters and guests, on-screen text such as name captions, tickers and quotes. |
+| `get_transcript` | Returns the full text of an episode: the platform's own subtitle file (WebVTT/SRT from Vesper) when the episode has one, otherwise a transcript saved by `listen_to_video`. Timestamped text, plain text, or a ready SRT/VTT file, for a whole episode or a time range. |
+| `save_video_analysis` | Stores what was found: summary, chapters, people (from on-screen name captions), topics, keywords and on-screen text. |
+| `listen_to_video` | Listens to an episode's own audio and transcribes it with timestamps (Whisper large-v3-turbo). DRM-protected episodes are refused. |
+| `transcribe_audio` | Transcribes speech with timestamps from an audio or video **file link you are entitled to use**, with Whisper large-v3-turbo on Cloudflare Workers AI. |
+| `search_video_index` | Searches every analysed episode: who appeared, when a topic came up, what was said or shown. Arabic spelling variants match. |
+| `get_video_analysis` | Reads the saved analysis and transcript of an episode, or lists analysed episodes. |
+
+**How it sees.** Every episode has a public preview file: the thumbnails the player shows while you scrub, one frame every ~15 seconds at 320×180. It is not DRM-protected, and on-screen text is readable. The assistant's own model does the looking, so no extra vision API key is needed.
+
+**How it reads subtitles.** Vesper returns each episode's subtitle files with its playback details (VTT, SRT and SCC, per language). `get_transcript` reads the VTT or SRT track in the requested language. Not every episode has one: in a September 2026 sample, 1 of 20 recent episodes did, and there the subtitles cover the non-Arabic speech. When there is no file, `listen_to_video` (team) creates a transcript that `get_transcript` then returns.
+
+**How it hears.** `listen_to_video` transcribes an episode's own audio as the official player receives it. Most episodes' audio is not encrypted (24 of 25 in a September 2026 sample); episodes with DRM-protected audio are refused and never decrypted. It fetches only the requested time range, up to 60 minutes per call. Measured: a 3.4-minute episode of «مع تميم» in 21 seconds. For protected episodes, `transcribe_audio` takes a link to a file you already have the right to use, such as your archive copy, an editing export, or a file you manage on another platform. The server decodes any format with PyAV (FFmpeg) and sends 30-second chunks to Whisper. Known Whisper hallucinations over music or silence, like «اشتركوا في القناة», are dropped. On a public-domain 1954 speech, 2.5 minutes of audio took 15 seconds.
+
+**Limits.** Frames are small and silent, so speech only appears if it's on screen or transcribed. People are identified only from on-screen name captions or known presenters, never by face.
+
+### Studio: ad breaks, social media and clips (team)
+
+Once an episode is transcribed, the team endpoint turns it into ready work for the ad and social teams.
+
+| Tool | What it does |
+| :--- | :--- |
+| `suggest_ad_breaks` | Mid-roll ad-break points at natural pauses in speech (word timings), scored higher near a scene change or chapter start and spaced apart (default 7 minutes, never in the first 3 minutes or the last minute). Each break has the text before and after it, a first-pass ad category (travel, food, technology, finance…) and a **brand-safety** flag: *sensitive* when war, violence or death is mentioned within a minute. With `advertiser_keywords`, it also lists where each keyword is said and the next break after it, for contextual ads. Returns a CSV cue sheet to enter as ad markers in Vesper. |
+| `get_social_pack` | One call for the social team: quotable lines with in/out times, 30–60 s clip-ready moments, hashtag candidates, key frames, the saved analysis and the transcript, plus the list of deliverables (posts per platform, thread, quote cards, 5 headlines, English summary). |
+| `make_clip` | Cuts up to 3 minutes of an episode into an MP4 with sound (360p–1080p) and returns a download link that lasts 7 days. The cut starts at the keyframe at or before the requested time. DRM-protected episodes are refused. |
+
+| `translate_transcript` | Translates the saved Arabic transcript into English (or French, Spanish, Turkish) subtitles with the same timing. Saved, searchable, and exported as SRT/VTT, plus the ready `subtitle.en-GB` column for the DVE batch CSV. |
+| `generate_chapters` | Splits the episode into chapters where the subject changes, each with a short Arabic title and a frame. Returned as **Vesper annotations** (timeline marks with titles; CSV columns `annotations.<ms>` = `image|title`), a YouTube chapter list, and saved to the index. |
+| `find_guests` | The guest database: everyone who appeared in or was named in an indexed episode, with role, episodes and first appearance. Search by name (Arabic or English) or role, or list the whole directory. Spelling variants of the same person are merged. |
+| `review_names` | Proper names speech recognition probably misheard, with the suggested spelling, count, time and line; *high* = recognition error, *low* = near spelling variant. |
+| `fix_transcript_names` | Applies the approved corrections to the saved transcript everywhere (text and word timings). |
+
+Chapters, guests and name review run on **Llama 3.3 70B** (Workers AI), chosen over Gemma 3, Mistral Small 3.1 and gpt-oss after a side-by-side test on an Arabic episode. A manual index run also does chapters, guests, name review and English subtitles for each episode.
+
+**Exact seconds.** Whisper returns a time for every word. They are saved with the transcript, so `search_video_index` gives the exact second a word or phrase is spoken (`exact_sec`).
+
+**On-demand indexing.** Transcription runs only when asked — through the tools, or a manual `POST /jobs/auto-index` (internal token) that transcribes, enriches and translates the newest not-yet-indexed episodes in the background. There is no transcription schedule, so Whisper cost is only spent on episodes someone wants. DRM-protected episodes are marked and skipped. The only scheduled job is a daily cleanup (clips + analytics retention).
+
+**Studio password.** Besides the team token in the URL, the studio pages and transcript text ask for a team password once (remembered 30 days). Set its hash with `wrangler secret put STUDIO_PASSWORD_HASH` as `<salt hex>:<PBKDF2-SHA256, 100k iterations, hex>`. Subtitle and CSV files (`.srt`, `.vtt`, `.csv`) stay token-only, because Vesper fetches them from the batch CSV.
+
+**Studio page and exports.** `/team/<token>/studio` lists the indexed episodes with their transcript (and English translation), chapters and suggested ad breaks (sensitive ones in red); `/team/<token>/studio/guests` is the guest database. Chapters export as a YouTube list (`<video_id>-chapters.txt`) and as one DVE batch-update CSV row with the annotations and subtitle tracks (`<video_id>-dve.csv`); translations as `<video_id>.en.srt|.vtt|.txt`. Each transcript downloads as text, SRT or VTT from `/team/<token>/studio/<video_id>.txt|.srt|.vtt`, and the ad breaks from `<video_id>-ads.csv`. On the team endpoint, `listen_to_video`, `get_transcript`, `get_video_analysis`, `suggest_ad_breaks` and `get_social_pack` return these links, so the full text reaches the team as a file instead of being pasted into the chat.
+
+Prompts on the team endpoint: `social_media_pack` and `contextual_ads`.
+
+**Vesper note.** Vesper has no separate chapters feature; annotations are its equivalent in the player. Subtitles accept VTT/SRT/SCC in several languages (DVE → subtitles, or the batch CSV `subtitle.<lang>` columns).
+
+**Limits.** Categories and brand safety come from keyword lists, a first pass for a person or the assistant to confirm. Ad markers are entered in Vesper by the team; the connector does not write to Vesper.
 
 ### SEO & Metadata Tools (requires `AJ360_ENABLE_SEO_TOOLS=1`)
 
@@ -219,6 +324,8 @@ This server speaks the standard MCP protocol over `stdio` (local) and Streamable
 | `MCP_PORT` | No | `8080` | Port for the HTTP transport (cloud deployment). |
 | `AJ360_ALLOWED_HOST` | Cloud only | — | Public hostname of your deployment (no scheme). Required when self-hosting on a custom domain — the DNS-rebinding protection rejects unknown hosts with 421. |
 | `AJ360_ENABLE_SEO_TOOLS` | No | off | Set to `1` to register the 16 SEO/analytics tools (full profile). |
+| `AJ360_ENABLE_UI` | No | on | Set to `0` to turn off the interactive MCP Apps view (tools then return plain JSON only). |
+| `AJ360_STATELESS` | No | on | HTTP transport runs stateless, so container sleeps and redeploys never leave clients on a dead session. Set to `0` for classic session mode. |
 | `AJ360_ENABLE_DASHBOARD` | No | `true` | Enable/disable the analytics dashboard. |
 | `AJ360_DASHBOARD_PORT` | No | `9090` | Port for the analytics dashboard. |
 | `AJ360_DASHBOARD_TOKEN` | No | — | Shared secret for the analytics data endpoints (`/api/stats`, `/api/recent`). When set, callers must send `Authorization: Bearer <token>` or `?token=<token>`. **Strongly recommended for any public/cloud deployment.** |
@@ -336,9 +443,17 @@ Calling `search_videos("غزة")` returns:
 
 ---
 
-## Analytics Dashboard
+## Analytics
 
-The server includes a **built-in analytics dashboard** that tracks every request made by AI tools.
+There are **two layers**, and the difference matters:
+
+| Layer | Endpoint | Persistence |
+| :--- | :--- | :--- |
+| **In-container dashboard** (this server) | `/api/stats`, `/api/recent`, `/` | ⚠️ **Current process only.** On serverless hosts that sleep idle containers (Cloudflare Containers, Cloud Run scale-to-zero), the SQLite file lives on ephemeral disk and resets — expect zeros after any restart. |
+| **Edge analytics** (Cloudflare deploy) | `/api/usage` | ✅ **Persistent.** The Worker logs every MCP request to a Cloudflare D1 database. See [`deploy/cloudflare/README.md`](deploy/cloudflare/README.md). |
+
+If you self-host on a always-on VM, the in-container dashboard is enough. On
+serverless, use the edge layer for anything you want to keep.
 
 ### What It Tracks
 
@@ -370,6 +485,7 @@ For cloud deployments, expose port 9090 alongside the MCP port (8080).
 | `GET /api/health` | Health check with version, transport, and links to `/privacy` and `/docs` |
 | `GET /privacy` | Privacy Policy page |
 | `GET /docs` | Server documentation page |
+| `GET /api/usage` | **Cloudflare deploys only** — persistent usage report from D1: clients, tools, top content queries, countries, daily trend, recent sessions |
 
 ### Configuration
 
