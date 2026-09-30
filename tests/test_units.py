@@ -57,9 +57,9 @@ def test_seo_tool_returns_function_unchanged_when_disabled():
     assert callable(server.audit_metadata_quality)
 
 
-def test_default_profile_registers_14_tools():
+def test_default_profile_registers_15_tools():
     tools = server.mcp._tool_manager._tools
-    assert len(tools) == 14 or os.environ.get("AJ360_ENABLE_SEO_TOOLS")
+    assert len(tools) == 15 or os.environ.get("AJ360_ENABLE_SEO_TOOLS")
 
 
 def test_dashboard_auth_denies_wrong_token():
@@ -95,12 +95,13 @@ UI_TOOLS = {
 }
 
 
-def test_ui_tools_declare_the_view():
+def test_view_is_opened_on_request_only():
     tools = server.mcp._tool_manager._tools
-    for name in UI_TOOLS:
-        meta = tools[name].meta or {}
-        assert meta.get("ui", {}).get("resourceUri") == mcp_apps.APP_URI, name
-        assert meta.get("ui/resourceUri") == mcp_apps.APP_URI, name
+    meta = tools["show_on_screen"].meta or {}
+    assert meta.get("ui", {}).get("resourceUri") == mcp_apps.APP_URI
+    assert meta.get("ui/resourceUri") == mcp_apps.APP_URI
+    for name in UI_TOOLS:  # data tools return data only; no card in the chat
+        assert not (tools[name].meta or {}).get("ui"), name
 
 
 def test_view_resource_is_registered_with_mcp_app_mime_and_csp():
@@ -533,3 +534,11 @@ def test_large_replies_are_compact_and_list_descriptions_short():
     long = "كلمة " * 100
     assert server._short(long).endswith("…") and len(server._short(long)) <= 162
     assert server._short("قصير") == "قصير"
+
+
+def test_only_show_on_screen_opens_the_view():
+    tools = server.mcp._tool_manager._tools
+    with_view = [n for n, t in tools.items() if (getattr(t, "meta", None) or {}).get("ui")]
+    assert with_view == ["show_on_screen"] or not server.tool_meta()
+    assert "error" in asyncio.run(server.show_on_screen("nope"))
+    assert "needs" in asyncio.run(server.show_on_screen("video"))

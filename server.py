@@ -796,7 +796,7 @@ def seo_tool(*args, **kwargs):
     return _unregistered
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Trending Content (المحتوى الرائج)", readOnlyHint=True), meta=tool_meta())
+@mcp.tool(annotations=ToolAnnotations(title="Get Trending Content (المحتوى الرائج)", readOnlyHint=True))
 @track_request("get_trending_content")
 async def get_trending_content() -> str:
     """
@@ -866,7 +866,7 @@ async def get_trending_content() -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Browse Section (تصفح الأقسام)", readOnlyHint=True), meta=tool_meta())
+@mcp.tool(annotations=ToolAnnotations(title="Browse Section (تصفح الأقسام)", readOnlyHint=True))
 @track_request("browse_section")
 async def browse_section(section_id: str) -> str:
     """
@@ -940,7 +940,7 @@ async def browse_section(section_id: str) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Video Details (تفاصيل الفيديو)", readOnlyHint=True), meta=tool_meta())
+@mcp.tool(annotations=ToolAnnotations(title="Get Video Details (تفاصيل الفيديو)", readOnlyHint=True))
 @track_request("get_video_details")
 async def get_video_details(video_id: int) -> str:
     """
@@ -993,7 +993,7 @@ async def get_video_details(video_id: int) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Play Video (تشغيل الفيديو)", readOnlyHint=True), meta=tool_meta())
+@mcp.tool(annotations=ToolAnnotations(title="Play Video (تشغيل الفيديو)", readOnlyHint=True))
 @track_request("play_video")
 async def play_video(video_id: int) -> str:
     """
@@ -1036,7 +1036,7 @@ async def play_video(video_id: int) -> str:
         return json.dumps({"error": str(e), "watch_url": f"{PLATFORM_URL}/video/{video_id}"}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Playback Diagnostics (فحص التشغيل)", readOnlyHint=True), meta=tool_meta())
+@mcp.tool(annotations=ToolAnnotations(title="Playback Diagnostics (فحص التشغيل)", readOnlyHint=True))
 @track_request("run_diagnostics")
 async def run_diagnostics(report: str = "") -> str:
     """
@@ -1069,7 +1069,7 @@ async def run_diagnostics(report: str = "") -> str:
     })
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Series Details (تفاصيل البرامج والسلاسل)", readOnlyHint=True), meta=tool_meta())
+@mcp.tool(annotations=ToolAnnotations(title="Get Series Details (تفاصيل البرامج والسلاسل)", readOnlyHint=True))
 @track_request("get_series_details")
 async def get_series_details(series_id: int) -> str:
     """
@@ -1113,7 +1113,7 @@ async def get_series_details(series_id: int) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Season Episodes (حلقات الموسم)", readOnlyHint=True), meta=tool_meta())
+@mcp.tool(annotations=ToolAnnotations(title="Get Season Episodes (حلقات الموسم)", readOnlyHint=True))
 @track_request("get_season_episodes")
 async def get_season_episodes(season_id: int, max_episodes: int = 20) -> str:
     """
@@ -1165,7 +1165,7 @@ async def get_season_episodes(season_id: int, max_episodes: int = 20) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Search Videos (البحث عن الفيديوهات)", readOnlyHint=True), meta=tool_meta())
+@mcp.tool(annotations=ToolAnnotations(title="Search Videos (البحث عن الفيديوهات)", readOnlyHint=True))
 @track_request("search_videos")
 async def search_videos(query: str, content_type: Optional[str] = None, max_results: int = 20) -> str:
     """
@@ -1311,7 +1311,7 @@ async def list_sections() -> str:
     return _dump(result)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Latest Episodes (أحدث الحلقات)", readOnlyHint=True), meta=tool_meta())
+@mcp.tool(annotations=ToolAnnotations(title="Get Latest Episodes (أحدث الحلقات)", readOnlyHint=True))
 @track_request("get_latest_episodes")
 async def get_latest_episodes(section_id: str = "AJA", count: int = 10) -> str:
     """
@@ -1360,6 +1360,56 @@ async def get_latest_episodes(section_id: str = "AJA", count: int = 10) -> str:
     except Exception as e:
         logger.error(f"Error getting latest episodes: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+# -- Interactive view: only when the user asks to see something on screen ----
+SCREEN_VIEWS = ("home", "section", "latest", "search", "series", "season", "video", "play")
+
+
+@mcp.tool(annotations=ToolAnnotations(title="Show on Screen (اعرض على الشاشة)", readOnlyHint=True), meta=tool_meta())
+@track_request("show_on_screen")
+async def show_on_screen(view: str, video_id: Optional[int] = None, series_id: Optional[int] = None,
+                         season_id: Optional[int] = None, section_id: Optional[str] = None,
+                         query: Optional[str] = None) -> str:
+    """
+    Open the interactive Al Jazeera 360 view (the site's look: rows, programme pages,
+    episode page, player) in the conversation. Use it ONLY when the user explicitly asks
+    to see or display something on screen or to play an episode here (e.g. «اعرضلي»،
+    «وريني»، «شغّلها هنا», "show me", "display", "play it here"). For everything else,
+    use the other tools, which return data only.
+
+    فتح العرض التفاعلي للجزيرة 360 داخل المحادثة، فقط عندما يطلب المستخدم العرض صراحةً.
+
+    Args:
+        view: home | section | latest | search | series | season | video | play
+        video_id: For video or play
+        series_id: For series
+        season_id: For season
+        section_id: For section or latest (e.g. "AJA", "AJD")
+        query: For search
+    """
+    v = (view or "").strip().lower()
+    if v not in SCREEN_VIEWS:
+        return _dump({"error": f"view must be one of: {', '.join(SCREEN_VIEWS)}"})
+    need = {"video": video_id, "play": video_id, "series": series_id, "season": season_id,
+            "section": section_id, "search": query}
+    if v in need and not need[v]:
+        return _dump({"error": f"view '{v}' needs its id or query"})
+    if v == "home":
+        return await get_trending_content()
+    if v == "section":
+        return await browse_section(section_id)
+    if v == "latest":
+        return await get_latest_episodes(section_id or "AJA")
+    if v == "search":
+        return await search_videos(query, max_results=24)
+    if v == "series":
+        return await get_series_details(series_id)
+    if v == "season":
+        return await get_season_episodes(season_id, 50)
+    if v == "video":
+        return await get_video_details(video_id)
+    return await play_video(video_id)
 
 
 @seo_tool(annotations=ToolAnnotations(title="Generate SEO Content (توليد محتوى SEO)", readOnlyHint=True))

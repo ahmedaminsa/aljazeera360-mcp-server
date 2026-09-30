@@ -54,8 +54,8 @@ The server ships with two tool profiles:
 
 | Profile | Tools | For whom | How |
 | :--- | :--- | :--- | :--- |
-| **Core** (default) | 14 tools (discovery + video watching, transcripts & search) | End users asking AI assistants about content | Works out of the box |
-| **Full** | All 41 tools (+ SEO, analytics, listening, ad breaks, social pack, clips, translation, chapters & guests) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
+| **Core** (default) | 15 tools (discovery + video watching, transcripts, search & on-request view) | End users asking AI assistants about content | Works out of the box |
+| **Full** | All 42 tools (+ SEO, analytics, listening, ad breaks, social pack, clips, translation, chapters & guests) | Content teams, SEO analysts | Set `AJ360_ENABLE_SEO_TOOLS=1` |
 
 On the hosted service, the public URL (`/mcp`) serves the **core** profile. The **full** profile is on a private team URL (`/team/<token>/mcp`) so the heavy analysis tools aren't open to the public or to directory crawlers. For Claude Code in this repo, set `AJ360_MCP_URL` to the team URL to get the SEO tools; without it, `.mcp.json` uses the public URL.
 
@@ -116,6 +116,10 @@ Clients without MCP Apps support ignore the view and get the same JSON as before
 - Safe by design: the view runs in the host's sandbox, may load only the platform's image and font hosts, and embeds only aljazeera360.com.
 - Backwards compatible: AI apps without UI support get the same JSON as before, and `AJ360_ENABLE_UI=0` turns the view off.
 - No build step: the view is one self-contained HTML file inside `mcp_apps.py`.
+
+### Interactive view on request
+
+The interactive view (the site's rows, programme and episode pages, and the player) opens **only when the user asks to see something**, through one tool, `show_on_screen` (`view` = home, section, latest, search, series, season, video or play). The other tools return data only, so answers stay short and fast and no cards fill the chat. Navigation inside the view goes through the same tool.
 
 ### Video understanding
 

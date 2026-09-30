@@ -306,7 +306,19 @@ window.addEventListener("message", (ev) => {
   }
 });
 
+// Navigation inside the view goes through show_on_screen, the one tool the view belongs to.
+const SCREEN = {
+  get_trending_content: () => ({view: "home"}),
+  browse_section: (a) => ({view: "section", section_id: a.section_id}),
+  get_latest_episodes: (a) => ({view: "latest", section_id: a.section_id}),
+  search_videos: (a) => ({view: "search", query: a.query}),
+  get_series_details: (a) => ({view: "series", series_id: a.series_id}),
+  get_season_episodes: (a) => ({view: "season", season_id: a.season_id}),
+  get_video_details: (a) => ({view: "video", video_id: a.video_id}),
+  play_video: (a) => ({view: "play", video_id: a.video_id}),
+};
 async function callTool(name, args){
+  if (SCREEN[name]) { args = SCREEN[name](args || {}); name = "show_on_screen"; }
   if (openai && openai.callTool) return openai.callTool(name, args);
   return request("tools/call", {name, arguments: args});
 }
