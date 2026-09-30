@@ -531,5 +531,5 @@ def test_large_replies_are_compact_and_list_descriptions_short():
     assert "\n" in server._dump(small) and "\n" not in server._dump(big)
     assert json.loads(server._dump(big)) == big
     long = "كلمة " * 100
-    assert server._short(long).endswith("…") and len(server._short(long)) <= 222
+    assert server._short(long).endswith("…") and len(server._short(long)) <= 162
     assert server._short("قصير") == "قصير"

@@ -87,7 +87,7 @@ def _dump(obj) -> str:
     return text if len(text) <= COMPACT_OVER else json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
 
-def _short(text: str, limit: int = 220) -> str:
+def _short(text: str, limit: int = 160) -> str:
     """List views carry a short description; get_video_details has the full one."""
     text = (text or "").strip()
     if len(text) <= limit:
