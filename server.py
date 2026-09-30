@@ -79,6 +79,23 @@ SECTIONS = {
 # Utilities: input bounds & validation
 # ============================================================================
 
+COMPACT_OVER = 6000  # bytes: bigger replies drop indentation (~40% smaller, faster for the assistant)
+
+
+def _dump(obj) -> str:
+    text = json.dumps(obj, ensure_ascii=False, indent=2)
+    return text if len(text) <= COMPACT_OVER else json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+
+def _short(text: str, limit: int = 220) -> str:
+    """List views carry a short description; get_video_details has the full one."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0]
+    return cut + "…"
+
+
 def _bound(value: int, lo: int, hi: int, default: int) -> int:
     """Clamp a numeric tool parameter to a safe range.
 
@@ -537,7 +554,7 @@ def format_vod_item(item: dict) -> dict:
     return {
         "id": vod_id,
         "title": item.get("title", ""),
-        "description": item.get("description", ""),
+        "description": _short(item.get("description", "")),
         "duration": format_duration(item.get("duration")),
         "duration_seconds": item.get("duration"),
         "type": "VOD",
@@ -554,7 +571,7 @@ def format_series_item(item: dict) -> dict:
     return {
         "id": series_id,
         "title": item.get("title", ""),
-        "description": item.get("description", item.get("longDescription", "")),
+        "description": _short(item.get("description", item.get("longDescription", ""))),
         "season_count": item.get("seasonCount", 0),
         "type": "SERIES",
         "poster": item.get("posterUrl", item.get("coverUrl", "")),
@@ -842,7 +859,7 @@ async def get_trending_content() -> str:
             if category["name"] and category["items"]:
                 result["categories"].append(category)
         
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
     
     except Exception as e:
         logger.error(f"Error getting trending content: {e}")
@@ -916,7 +933,7 @@ async def browse_section(section_id: str) -> str:
             if bucket_info["items"]:
                 result["programs"].append(bucket_info)
         
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
     
     except Exception as e:
         logger.error(f"Error browsing section {section_id}: {e}")
@@ -969,7 +986,7 @@ async def get_video_details(video_id: int) -> str:
             "episode_info": data.get("episodeInformation"),
         }
         
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
     
     except Exception as e:
         logger.error(f"Error getting video details for {video_id}: {e}")
@@ -1013,7 +1030,7 @@ async def play_video(video_id: int) -> str:
             "embed_url": watch_url,
             "player": "Official Al Jazeera 360 player (embedded where the AI app allows it)",
         }
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
     except Exception as e:
         logger.error(f"Error preparing playback for {video_id}: {e}")
         return json.dumps({"error": str(e), "watch_url": f"{PLATFORM_URL}/video/{video_id}"}, ensure_ascii=False)
@@ -1089,7 +1106,7 @@ async def get_series_details(series_id: int) -> str:
             "url": f"{PLATFORM_URL}/series/{series_id}",
         }
         
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
     
     except Exception as e:
         logger.error(f"Error getting series details for {series_id}: {e}")
@@ -1141,7 +1158,7 @@ async def get_season_episodes(season_id: int, max_episodes: int = 20) -> str:
             "episodes": episodes,
         }
         
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
     
     except Exception as e:
         logger.error(f"Error getting season episodes for {season_id}: {e}")
@@ -1263,7 +1280,7 @@ async def search_videos(query: str, content_type: Optional[str] = None, max_resu
             "results": results,
         }
         
-        return json.dumps(output, ensure_ascii=False, indent=2)
+        return _dump(output)
     
     except Exception as e:
         logger.error(f"Error searching for '{query}': {e}")
@@ -1291,7 +1308,7 @@ async def list_sections() -> str:
         "usage_note": "Use the 'id' field with browse_section() to explore content in each section.",
     }
     
-    return json.dumps(result, ensure_ascii=False, indent=2)
+    return _dump(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Get Latest Episodes (أحدث الحلقات)", readOnlyHint=True), meta=tool_meta())
@@ -1338,7 +1355,7 @@ async def get_latest_episodes(section_id: str = "AJA", count: int = 10) -> str:
             "total_found": min(len(latest), count),
         }
         
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
     
     except Exception as e:
         logger.error(f"Error getting latest episodes: {e}")
@@ -1592,7 +1609,7 @@ async def generate_seo_content(video_id: int) -> str:
                 "name": series_title
             }
         
-        schema_html = f'<script type="application/ld+json">\n{json.dumps(schema_markup, ensure_ascii=False, indent=2)}\n</script>'
+        schema_html = f'<script type="application/ld+json">\n{_dump(schema_markup)}\n</script>'
         
         # ----------------------------------------------------------------
         # 12. Final result
@@ -1621,7 +1638,7 @@ async def generate_seo_content(video_id: int) -> str:
         }
         
         logger.info(f"Generated SEO content (rule-based) for video {video_id}: {title}")
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
     
     except Exception as e:
         logger.error(f"Error generating SEO content for video {video_id}: {e}")
@@ -1774,7 +1791,7 @@ async def generate_sitemap(sections: str = "all", max_per_section: int = 100, pa
         }
 
         logger.info(f"Generated video sitemap with {total_urls} URLs across {len(section_ids)} sections")
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
 
     except Exception as e:
         logger.error(f"Error generating sitemap: {e}")
@@ -1912,7 +1929,7 @@ async def audit_metadata_quality(section_id: str = "AJA", max_items: int = 50, p
         result["recommendations"] = [r for r in result["recommendations"] if r]
 
         logger.info(f"Audited {total} items in section {section_id}: health score {health_score}%")
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
 
     except Exception as e:
         logger.error(f"Error auditing metadata quality: {e}")
@@ -2026,7 +2043,7 @@ async def get_trending_topics(top_n: int = 20) -> str:
         result["content_strategy_insights"] = [i for i in result["content_strategy_insights"] if i]
 
         logger.info(f"Analyzed {total_items} items for trending topics")
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
 
     except Exception as e:
         logger.error(f"Error getting trending topics: {e}")
@@ -2115,7 +2132,7 @@ async def compare_sections() -> str:
         }
 
         logger.info(f"Compared {len(results)} sections")
-        return json.dumps({"summary": summary, "sections": results}, ensure_ascii=False, indent=2)
+        return _dump({"summary": summary, "sections": results})
 
     except Exception as e:
         logger.error(f"Error comparing sections: {e}")
@@ -2216,7 +2233,7 @@ async def get_series_seo_map(series_id: int) -> str:
             "series_url": f"{PLATFORM_URL}/series/{series_id}",
             "episodes": episodes_map,
             "tv_series_schema": tv_series_schema,
-            "tv_series_schema_html": f'<script type="application/ld+json">\n{json.dumps(tv_series_schema, ensure_ascii=False, indent=2)}\n</script>',
+            "tv_series_schema_html": f'<script type="application/ld+json">\n{_dump(tv_series_schema)}\n</script>',
             "seo_recommendations": [
                 f"بناء صفحة رئيسية لـ '{series_title}' تجمع كل الحلقات",
                 "إضافة TVSeries schema في صفحة السلسلة",
@@ -2226,7 +2243,7 @@ async def get_series_seo_map(series_id: int) -> str:
         }
 
         logger.info(f"Built SEO map for series {series_id}: {series_title} ({total_episodes} episodes)")
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
 
     except Exception as e:
         logger.error(f"Error building series SEO map: {e}")
@@ -2376,7 +2393,7 @@ async def build_knowledge_graph(sections: str = "AJA,AJD") -> str:
         }
         
         logger.info(f"Built knowledge graph: {len(entity_counter)} entities from {len(all_titles)} videos")
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
         
     except Exception as e:
         logger.error(f"Error building knowledge graph: {e}")
@@ -2476,7 +2493,7 @@ async def generate_faq_schema(video_id: int) -> str:
             'faqs': faqs,
             'faq_count': len(faqs),
             'schema_jsonld': faq_schema,
-            'schema_html': f'<script type="application/ld+json">\n{json.dumps(faq_schema, ensure_ascii=False, indent=2)}\n</script>',
+            'schema_html': f'<script type="application/ld+json">\n{_dump(faq_schema)}\n</script>',
             'usage_tips': [
                 'أضف هذا الـ Schema في <head> صفحة الفيديو',
                 'يساعد على الظهور في People Also Ask في Google',
@@ -2486,7 +2503,7 @@ async def generate_faq_schema(video_id: int) -> str:
         }
         
         logger.info(f"Generated FAQ schema for video {video_id}: {len(faqs)} questions")
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
         
     except Exception as e:
         logger.error(f"Error generating FAQ schema: {e}")
@@ -2709,7 +2726,7 @@ async def get_ai_discoverability_score(section_id: str = "AJA", max_items: int =
         }
         
         logger.info(f"AI Discoverability Score for {section_id}: avg={avg_score}, n={len(scored_items)}")
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
         
     except Exception as e:
         logger.error(f"Error calculating discoverability score: {e}")
@@ -2855,7 +2872,7 @@ async def build_topic_clusters(sections: str = "AJA,AJD") -> str:
         }
         
         logger.info(f"Built topic clusters: {len(cluster_report)} clusters from {len(all_items)} items")
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
         
     except Exception as e:
         logger.error(f"Error building topic clusters: {e}")
@@ -3016,7 +3033,7 @@ async def find_evergreen_content(sections: str = "AJA,AJD") -> str:
         }
         
         logger.info(f"Evergreen analysis: {len(evergreen)} evergreen, {len(news_content)} news, {len(mixed)} mixed")
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
         
     except Exception as e:
         logger.error(f"Error finding evergreen content: {e}")
@@ -3122,7 +3139,7 @@ async def get_host_profile(host_name: str, max_items: int = 20) -> str:
             "person_schema": schema,
             "videos": host_videos[:20]
         }
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
@@ -3216,7 +3233,7 @@ async def get_genre_report(genre: str = "", max_items: int = 15) -> str:
             "genres": genre_summary,
             "subgenres": subgenre_summary
         }
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
@@ -3300,7 +3317,7 @@ async def get_searchable_tags_map(max_items: int = 20, top_n: int = 50, page: in
             "top_hosts": [{"host": h, "count": n} for h, n in all_hosts.most_common(10)],
             "seo_insight": f"أعلى 3 كلمات مفتاحية: {', '.join([t for t, _ in all_tags.most_common(3)])}. أكثر الدول تغطيةً: {', '.join([c for c, _ in all_countries.most_common(3)])}"
         }
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
@@ -3400,7 +3417,7 @@ async def get_country_content_map(country: str = "", max_items: int = 20, page: 
             "total_videos_with_country": sum(len(v) for v in country_map.values()),
             "countries": paginated_summary
         }
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
@@ -3527,10 +3544,10 @@ async def generate_series_schema(series_id: int) -> str:
             "seo_meta_title": f"{series_title} | الجزيرة 360",
             "seo_meta_description": f"شاهد جميع حلقات {series_title} على الجزيرة 360 — {len(episodes)} حلقة بجودة 4K.",
             "tv_series_schema": tv_series_schema,
-            "schema_html": f'<script type="application/ld+json">\n{json.dumps(tv_series_schema, ensure_ascii=False, indent=2)}\n</script>',
+            "schema_html": f'<script type="application/ld+json">\n{_dump(tv_series_schema)}\n</script>',
             "episodes": episodes
         }
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
@@ -3607,7 +3624,7 @@ async def watch_video(video_id: int, start_minute: float = 0, end_minute: Option
         loop = asyncio.get_running_loop()
         images = [MCPImage(data=await loop.run_in_executor(None, video_intel.contact_sheet, sheet), format="jpeg")
                   for sheet in sheets]
-        return [json.dumps(header, ensure_ascii=False, indent=2), *images]
+        return [_dump(header), *images]
     except Exception as e:
         logger.error(f"watch_video {video_id}: {e}")
         return [json.dumps({"error": str(e)}, ensure_ascii=False)]
@@ -3686,7 +3703,7 @@ async def transcribe_audio(video_id: int, audio_url: str, language: str = "ar",
         chunks = await asyncio.to_thread(video_intel.decode_to_chunks, path, start, end)
         if not chunks:
             return json.dumps({"error": "No audio found in that range."}, ensure_ascii=False)
-        return json.dumps(await _transcribe_and_store(meta, chunks, language, "file"), ensure_ascii=False, indent=2)
+        return _dump(await _transcribe_and_store(meta, chunks, language, "file"))
     except Exception as e:
         logger.error(f"transcribe_audio {video_id}: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -3755,7 +3772,7 @@ async def listen_to_video(video_id: int, start_minute: float = 0, end_minute: Op
         result = await _listen(meta, start, end, language)
         if "error" not in result and meta.get("duration") and end < meta["duration"]:
             result["next"] = f"Continue with start_minute={end / 60:g}"
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return _dump(result)
     except video_intel.ProtectedAudio:
         return json.dumps({"error": "This episode's audio is DRM-protected, so it cannot be listened to. "
                                     "Use transcribe_audio with a file you are entitled to use.",
@@ -3826,26 +3843,36 @@ async def search_video_index(query: str, kind: str = "all", limit: int = 40) -> 
 
 @mcp.tool(annotations=ToolAnnotations(title="Get Video Analysis (تحليل الحلقة المحفوظ)", readOnlyHint=True))
 @track_request("get_video_analysis")
-async def get_video_analysis(video_id: Optional[int] = None) -> str:
+async def get_video_analysis(video_id: Optional[int] = None, include_transcript: bool = False) -> str:
     """
-    Read the saved analysis and transcript of an episode, or list all analysed episodes
-    when no video_id is given. Useful for writing descriptions, tags and SEO metadata.
+    Read the saved analysis of an episode (summary, chapters, guests, topics, ad breaks,
+    name fixes, on-screen text) or list all analysed episodes when no video_id is given.
+    The transcript lines are left out unless include_transcript is true: use
+    get_transcript for the text, or the download links.
 
-    عرض التحليل والتفريغ المحفوظين لحلقة، أو قائمة كل الحلقات المحللة.
+    عرض التحليل المحفوظ لحلقة (الملخص والفصول والضيوف…)، أو قائمة كل الحلقات المحللة.
 
     Args:
         video_id: Video ID (omit to list analysed episodes)
+        include_transcript: Also return every transcript/translation line (large; default false)
     """
     try:
         res = await video_intel.index.get(video_id)
         if video_id and res.get("analysis") and isinstance(res["analysis"].get("data"), str):
             res["analysis"]["data"] = json.loads(res["analysis"]["data"])
         if video_id:
-            for m in res.get("moments", []):
+            moments = res.get("moments", [])
+            lines = {k: sum(1 for m in moments if m.get("kind") == k) for k in ("transcript", "transcript_en")}
+            if not include_transcript:
+                moments = [m for m in moments if not str(m.get("kind", "")).startswith("transcript")]
+            for m in moments:
                 m["at"] = video_intel.fmt_ts(m.pop("t_sec", 0))
-            if STUDIO_URL and any(m.get("kind") == "transcript" for m in res.get("moments", [])):
+            res["moments"] = moments
+            res["transcript_lines"] = lines["transcript"]
+            res["translation_lines_en"] = lines["transcript_en"]
+            if STUDIO_URL and lines["transcript"]:
                 res["downloads"] = _downloads(video_id, ads=True)
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return _dump(res)
     except Exception as e:
         logger.error(f"get_video_analysis: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -3986,7 +4013,7 @@ async def get_transcript(video_id: int, language: str = "ar", format: str = "tex
             out["downloads"] = _downloads(meta["id"])
         elif source and source.startswith("saved translation") and STUDIO_URL:
             out["downloads"] = {f: f"{STUDIO_URL}/{meta['id']}.{language}.{f}" for f in ("srt", "vtt", "txt")}
-        return json.dumps(out, ensure_ascii=False, indent=2)
+        return _dump(out)
     except Exception as e:
         logger.error(f"get_transcript {video_id}: {e}")
         return json.dumps({"error": str(e), "video_id": video_id}, ensure_ascii=False)
@@ -4080,7 +4107,7 @@ async def suggest_ad_breaks(video_id: int, count: Optional[int] = None, min_gap_
             out["downloads"] = _downloads(meta["id"], ads=True)
         if not res["cues"]:
             out["hint"] = "No transcript yet: run listen_to_video for pause-accurate breaks."
-        return json.dumps(out, ensure_ascii=False, indent=2)
+        return _dump(out)
     except Exception as e:
         logger.error(f"suggest_ad_breaks {video_id}: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -4101,7 +4128,7 @@ SOCIAL_DELIVERABLES = [
 @seo_tool(annotations=ToolAnnotations(title="Social Media Pack (باكدج السوشيال ميديا)", readOnlyHint=True),
           structured_output=False)
 @track_request("get_social_pack")
-async def get_social_pack(video_id: int, quotes: int = 8) -> list:
+async def get_social_pack(video_id: int, quotes: int = 8, include_transcript: bool = False) -> list:
     """
     Everything the social media team needs to promote an episode, in one call: episode
     details, the saved analysis (summary, chapters, people), the timestamped transcript,
@@ -4115,6 +4142,7 @@ async def get_social_pack(video_id: int, quotes: int = 8) -> list:
     Args:
         video_id: Video ID
         quotes: Number of quote candidates (default 8)
+        include_transcript: Also return the full timestamped transcript (large; default false)
     """
     try:
         meta = await _video_meta(video_id)
@@ -4136,14 +4164,16 @@ async def get_social_pack(video_id: int, quotes: int = 8) -> list:
             "hashtag_candidates": studio.hashtags(meta["title"], meta["series"], cues),
             "brand_safety": studio.classify(" ".join(c["text"] for c in cues))["brand_safety"] if cues else None,
             "deliverables": SOCIAL_DELIVERABLES,
-            "transcript": transcript[:40000] + ("\n…" if len(transcript) > 40000 else ""),
+            "transcript_lines": len(cues),
         }
+        if include_transcript:
+            pack["transcript"] = transcript[:40000] + ("\n…" if len(transcript) > 40000 else "")
         if not cues:
             pack["hint"] = "No transcript yet: run listen_to_video first for quotes and clip moments."
         elif source.startswith("saved") and STUDIO_URL:
             pack["downloads"] = _downloads(meta["id"], ads=bool(data.get("ad_breaks")))
         frames = await _episode_frames(meta)
-        items = [json.dumps(pack, ensure_ascii=False, indent=2)]
+        items = [_dump(pack)]
         if frames:
             chosen = video_intel.pick_frames(frames, 30, None, 9)
             sheet = await asyncio.to_thread(video_intel.contact_sheet, chosen)
@@ -4344,7 +4374,7 @@ async def translate_transcript(video_id: int, language: str = "en") -> str:
                                 "text": f"{STUDIO_URL}/{meta['id']}.{language}.txt?view=1"}
             res["vesper_csv_column"] = {f"subtitle.{'en-GB' if language == 'en' else language}":
                                         f"{STUDIO_URL}/{meta['id']}.{language}.vtt|{studio.LANGUAGES[language]}"}
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return _dump(res)
     except Exception as e:
         logger.error(f"translate_transcript {video_id}: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -4381,7 +4411,7 @@ async def generate_chapters(video_id: int, refresh: bool = False) -> str:
         if STUDIO_URL:
             res["downloads"] = {"youtube": f"{STUDIO_URL}/{meta['id']}-chapters.txt?view=1",
                                 "vesper_csv": f"{STUDIO_URL}/{meta['id']}-dve.csv"}
-        return json.dumps(res, ensure_ascii=False, indent=2)
+        return _dump(res)
     except Exception as e:
         logger.error(f"generate_chapters {video_id}: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -4432,7 +4462,7 @@ async def find_guests(query: str = "", include_mentions: bool = True, limit: int
             out["directory_page"] = f"{STUDIO_URL}/guests"
         if not people:
             out["hint"] = "Guests are extracted by generate_chapters (and automatically for new episodes)."
-        return json.dumps(out, ensure_ascii=False, indent=2)
+        return _dump(out)
     except Exception as e:
         logger.error(f"find_guests: {e}")
         return json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -4587,7 +4617,7 @@ register_ui(mcp)
 @mcp.resource("aljazeera360://sections")
 async def sections_resource() -> str:
     """List of all available sections on Al Jazeera 360."""
-    return json.dumps(SECTIONS, ensure_ascii=False, indent=2)
+    return _dump(SECTIONS)
 
 
 @mcp.resource("aljazeera360://about")

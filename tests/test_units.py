@@ -524,3 +524,12 @@ def test_name_suggestions_keep_errors_and_drop_expansions_and_synonyms():
              {"written": "الاستخبارات الإسرائيلية", "standard": "الموساد", "misheard": True}]
     got = [(f["heard"], f["confidence"]) for f in studio.name_suggestions(items)]
     assert got == [("مردخايف عنونه", "high"), ("تاكساس", "low")]
+
+
+def test_large_replies_are_compact_and_list_descriptions_short():
+    small, big = {"a": 1}, {"rows": [{"text": "x" * 100} for _ in range(100)]}
+    assert "\n" in server._dump(small) and "\n" not in server._dump(big)
+    assert json.loads(server._dump(big)) == big
+    long = "كلمة " * 100
+    assert server._short(long).endswith("…") and len(server._short(long)) <= 222
+    assert server._short("قصير") == "قصير"
