@@ -4,7 +4,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![MCP Protocol](https://img.shields.io/badge/MCP-Compatible-purple.svg)](https://modelcontextprotocol.io)
-[![Smithery](https://smithery.ai/badge/aljazeera360-mcp)](https://smithery.ai/server/aljazeera360-mcp)
+[![LightNow capabilities](https://lightnow.ai/badge/io.github.ahmedaminsa/aljazeera360-mcp-server)](https://lightnow.ai/servers/io.github.ahmedaminsa/aljazeera360-mcp-server)
 
 > Connect any AI assistant to Al Jazeera 360's streaming catalog — search, browse, and retrieve Arabic video content with direct watch links.
 
