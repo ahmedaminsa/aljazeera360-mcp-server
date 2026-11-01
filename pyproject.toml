@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aljazeera360-mcp"
-version = "2.0.1"
+version = "2.3.0"
 description = "MCP server for Al Jazeera 360 — Connect AI assistants to Al Jazeera's streaming catalog"
 readme = "README.md"
 license = "MIT"
@@ -25,9 +25,11 @@ classifiers = [
     "Topic :: Multimedia :: Video",
 ]
 dependencies = [
-    "mcp>=1.9.0,<2.0.0",
+    "mcp>=1.26.0,<2.0.0",
     "httpx>=0.25.0",
     "tenacity>=8.0.0",
+    "Pillow>=10.0.0",
+    "av>=12.0.0",
 ]
 
 [project.optional-dependencies]
@@ -45,7 +47,7 @@ Issues = "https://github.com/ahmedaminsa/aljazeera360-mcp-server/issues"
 aljazeera360-mcp = "server:main"
 
 [tool.hatch.build.targets.wheel]
-include = ["server.py", "analytics.py"]
+include = ["server.py", "analytics.py", "mcp_apps.py", "video_intel.py"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

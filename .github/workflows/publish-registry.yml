@@ -1,0 +1,60 @@
+# Publishes server.json to the official MCP Registry
+# (https://registry.modelcontextprotocol.io).
+#
+# Runs when server.json changes (bump "version"), or from the Actions tab ("Publish to MCP Registry" → Run workflow)
+# after bumping "version" in server.json. Authentication uses GitHub's OIDC
+# token, which proves this repo belongs to ahmedaminsa and so may publish the
+# io.github.ahmedaminsa/* namespace. No secrets are needed.
+name: Publish to MCP Registry
+
+on:
+  workflow_dispatch:
+  # Also publishes automatically when server.json changes on these branches,
+  # so a version bump is enough (works from a phone, no Actions tab needed).
+  push:
+    branches: [main, claude/mcp-public-improvements-IwyZR]
+    paths: [server.json]
+
+permissions:
+  id-token: write   # OIDC token for the registry login
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mcp-publisher
+        run: |
+          curl -sL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" \
+            | tar xz mcp-publisher
+
+      - name: Validate server.json
+        run: ./mcp-publisher validate
+
+      - name: Log in (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish
+        run: |
+          # Re-running for a version that is already listed is not an error.
+          if ! out=$(./mcp-publisher publish 2>&1); then
+            echo "$out"
+            echo "$out" | grep -q "duplicate version" && { echo "Version already published — nothing to do."; exit 0; }
+            exit 1
+          fi
+          echo "$out"
+
+      - name: Confirm listing
+        run: |
+          # The registry's search index takes up to a minute to show a new version.
+          V=$(python3 -c "import json;print(json.load(open('server.json'))['version'])")
+          for i in $(seq 1 12); do
+            if curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=io.github.ahmedaminsa/aljazeera360-mcp-server" \
+                | python3 -c "import json,sys; v=[x['server']['version'] for x in json.load(sys.stdin)['servers']]; print('listed versions:', v); sys.exit(0 if '$V' in v else 1)"; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Version $V not visible in the registry search yet."; exit 1
