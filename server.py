@@ -55,6 +55,16 @@ API_KEY = os.environ.get("AJ360_API_KEY", "")
 REALM = "dce.aljazeera"
 APP_VERSION = "6.60.0.4ccbbae"
 PLATFORM_URL = "https://www.aljazeera360.com"
+# Watch links in answers go through the Worker's /go redirect when it is set, so a click from an AI
+# chat is counted and lands on the platform with UTM tags. SEO outputs keep the plain platform URLs.
+TRACK_URL = os.environ.get("AJ360_TRACK_URL", "").rstrip("/")
+
+
+def watch_link(kind: str, item_id) -> str:
+    """Link to a video or series page; tracked through /go/v|s/<id> when TRACK_URL is set."""
+    if TRACK_URL and item_id:
+        return f"{TRACK_URL}/{'s' if kind == 'series' else 'v'}/{item_id}"
+    return f"{PLATFORM_URL}/{kind}/{item_id}"
 
 # Available sections/channels
 SECTIONS = {
@@ -560,7 +570,7 @@ def format_vod_item(item: dict) -> dict:
         "type": "VOD",
         "thumbnail": item.get("thumbnailUrl", item.get("coverUrl", "")),
         "quality": "4K" if item.get("maxHeight", 0) >= 2160 else "HD" if item.get("maxHeight", 0) >= 1080 else "SD",
-        "watch_url": f"{PLATFORM_URL}/video/{vod_id}",
+        "watch_url": watch_link("video", vod_id),
         "access_level": item.get("accessLevel", "UNKNOWN"),
     }
 
@@ -575,7 +585,7 @@ def format_series_item(item: dict) -> dict:
         "season_count": item.get("seasonCount", 0),
         "type": "SERIES",
         "poster": item.get("posterUrl", item.get("coverUrl", "")),
-        "url": f"{PLATFORM_URL}/series/{series_id}",
+        "url": watch_link("series", series_id),
     }
 
 
@@ -664,11 +674,11 @@ def format_search_results(data: dict, query: str = "", max_results: int = 20) ->
                 final_title = title or action_data.get("title", "")
                 if final_title:
                     if content_type == "VOD":
-                        url = f"{PLATFORM_URL}/video/{vod_id}"
+                        url = watch_link("video", vod_id)
                     elif content_type == "LIVE_EVENT":
                         url = f"{PLATFORM_URL}/live/{vod_id}"
                     else:
-                        url = f"{PLATFORM_URL}/series/{vod_id}"
+                        url = watch_link("series", vod_id)
                     results.append({
                         "title": final_title,
                         "series": series_title,
@@ -830,7 +840,7 @@ async def get_trending_content() -> str:
             if event.get("type") == "VOD" and event.get("id"):
                 featured["video_id"] = event["id"]
                 featured["video_title"] = event.get("title", "")
-                featured["watch_url"] = f"{PLATFORM_URL}/video/{event['id']}"
+                featured["watch_url"] = watch_link("video", event['id'])
             if series_info.get("id"):
                 featured["series_id"] = series_info["id"]
             result["featured"].append(featured)
@@ -982,7 +992,7 @@ async def get_video_details(video_id: int) -> str:
             "categories": [c for c in data.get("categories", []) if c],
             "tags": [tag.get("title", "") for tag in data.get("displayableTags", []) if tag.get("title")],
             "access_level": data.get("accessLevel", "UNKNOWN"),
-            "watch_url": f"{PLATFORM_URL}/video/{data.get('id')}",
+            "watch_url": watch_link("video", data.get('id')),
             "episode_info": data.get("episodeInformation"),
         }
         
@@ -1010,7 +1020,7 @@ async def play_video(video_id: int) -> str:
     try:
         data = await client.get_vod_details(video_id)
         vid = data.get("id") or video_id
-        watch_url = f"{PLATFORM_URL}/video/{vid}"
+        watch_url = watch_link("video", vid)
         access = data.get("accessLevel", "UNKNOWN")
         ep = data.get("episodeInformation") or {}
         result = {
@@ -1027,13 +1037,13 @@ async def play_video(video_id: int) -> str:
             "watch_url": watch_url,
             # Playback stays on the official player: some streams are DRM-protected
             # and IP-bound, so the page (not a stream URL) is what gets embedded.
-            "embed_url": watch_url,
+            "embed_url": f"{PLATFORM_URL}/video/{vid}",
             "player": "Official Al Jazeera 360 player (embedded where the AI app allows it)",
         }
         return _dump(result)
     except Exception as e:
         logger.error(f"Error preparing playback for {video_id}: {e}")
-        return json.dumps({"error": str(e), "watch_url": f"{PLATFORM_URL}/video/{video_id}"}, ensure_ascii=False)
+        return json.dumps({"error": str(e), "watch_url": watch_link("video", video_id)}, ensure_ascii=False)
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Playback Diagnostics (فحص التشغيل)", readOnlyHint=True))
@@ -1103,7 +1113,7 @@ async def get_series_details(series_id: int) -> str:
             "total_seasons": len(seasons),
             "seasons": seasons,
             "tags": [tag.get("title", "") for tag in data.get("displayableTags", []) if tag.get("title")],
-            "url": f"{PLATFORM_URL}/series/{series_id}",
+            "url": watch_link("series", series_id),
         }
         
         return _dump(result)
@@ -1141,7 +1151,7 @@ async def get_season_episodes(season_id: int, max_episodes: int = 20) -> str:
                 "episode_number": ep.get("episodeInformation", {}).get("episodeNumber") if ep.get("episodeInformation") else None,
                 "thumbnail": ep.get("thumbnailUrl", ""),
                 "published_date": ep.get("publishedDate", ""),
-                "watch_url": f"{PLATFORM_URL}/video/{ep.get('id')}",
+                "watch_url": watch_link("video", ep.get('id')),
                 "access_level": ep.get("accessLevel", "UNKNOWN"),
             })
         
@@ -1236,9 +1246,9 @@ async def search_videos(query: str, content_type: Optional[str] = None, max_resu
                                 seen_ids.add(item_id)
                                 item_type = item.get("type", "VOD")
                                 url = (
-                                    f"{PLATFORM_URL}/video/{item_id}"
+                                    watch_link("video", item_id)
                                     if item_type == "VOD"
-                                    else f"{PLATFORM_URL}/series/{item_id}"
+                                    else watch_link("series", item_id)
                                 )
                                 browse_results.append({
                                     "title": item.get("title", ""),
@@ -4799,6 +4809,8 @@ PRIVACY_HTML = """<!DOCTYPE html>
         <li>The connecting software's user-agent string</li>
         <li>A random session number that groups the requests of one conversation; it is not linked to you</li>
         <li>For the interactive video view only: technical playback capabilities of the app (for example whether protected video or embedding is allowed)</li>
+        <li>Whether a tool answered or failed, how many results a search returned, and how long the server took</li>
+        <li>When you open a watch link from an answer: the time, the video or series number, and the country of the connection. The link then opens the Al Jazeera 360 page with tags that tell the platform the visit came from an AI assistant.</li>
     </ul>
     <p><strong>IP addresses are not stored.</strong> To protect the service, the number of requests per conversation (or, without one, per network range) is counted for a minute in Cloudflare's rate limiter, then discarded. Please do not type personal information into search requests, since search terms are logged as written.</p>
 

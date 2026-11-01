@@ -542,3 +542,11 @@ def test_only_show_on_screen_opens_the_view():
     assert with_view == ["show_on_screen"] or not server.tool_meta()
     assert "error" in asyncio.run(server.show_on_screen("nope"))
     assert "needs" in asyncio.run(server.show_on_screen("video"))
+
+
+def test_watch_links_are_tracked_only_when_configured(monkeypatch):
+    monkeypatch.setattr(server, "TRACK_URL", "")
+    assert server.watch_link("video", 12) == "https://www.aljazeera360.com/video/12"
+    monkeypatch.setattr(server, "TRACK_URL", "https://h/go")
+    assert server.watch_link("video", 12) == "https://h/go/v/12"
+    assert server.watch_link("series", 7) == "https://h/go/s/7"

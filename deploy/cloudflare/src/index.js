@@ -31,6 +31,8 @@ export class AJ360Container extends Container {
       // the container reaches them over /internal/* with a shared secret.
       AJ360_INDEX_URL: env.AJ360_ALLOWED_HOST ? `https://${env.AJ360_ALLOWED_HOST}` : "",
       AJ360_INTERNAL_TOKEN: env.AJ360_INTERNAL_TOKEN ?? "",
+      // Watch links in answers go through /go/v|s/<id> so clicks from AI chats are counted.
+      AJ360_TRACK_URL: env.AJ360_ALLOWED_HOST ? `https://${env.AJ360_ALLOWED_HOST}/go` : "",
       // Team only: base of the studio export links (full transcript files), so the
       // tools can hand out a download link instead of pasting the text into chat.
       AJ360_STUDIO_URL: this.seoTools && env.AJ360_TEAM_TOKEN && env.AJ360_ALLOWED_HOST
@@ -104,6 +106,7 @@ function toEvent(msg) {
   if (method.startsWith("notifications/")) return null;
   const params = msg.params || {};
   return {
+    id: msg.id ?? null,
     method,
     tool: method === "tools/call" ? params.name ?? null : null,
     query: method === "tools/call" ? summarizeArgs(params.arguments) : null,
@@ -112,8 +115,41 @@ function toEvent(msg) {
   };
 }
 
-async function logEvents(env, request, response, bodyText, isTeam) {
+/** Read a tool result: did it fail, and how many items came back (for searches). */
+function outcomeOf(rpc) {
+  if (!rpc || typeof rpc !== "object") return { ok: null, count: null };
+  if (rpc.error) return { ok: 0, count: null };
+  const result = rpc.result || {};
+  if (result.isError) return { ok: 0, count: null };
+  const text = (result.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+  let data = null;
+  try { data = JSON.parse(text); } catch { return { ok: 1, count: null }; }
+  if (!data || typeof data !== "object") return { ok: 1, count: null };
+  if (data.error) return { ok: 0, count: null };
+  for (const k of ["total_results", "total_matches", "total_found", "total_people", "total_episodes"]) {
+    if (typeof data[k] === "number") return { ok: 1, count: data[k] };
+  }
+  for (const k of ["results", "episodes", "latest_episodes", "people", "moments"]) {
+    if (Array.isArray(data[k])) return { ok: 1, count: data[k].length };
+  }
+  return { ok: 1, count: null };
+}
+
+/** JSON-RPC responses from a JSON or SSE body, keyed by id. */
+function rpcById(text) {
+  const out = new Map();
+  const add = (o) => { for (const m of Array.isArray(o) ? o : [o]) if (m && m.id !== undefined) out.set(String(m.id), m); };
+  const t = (text || "").trim();
+  if (t.startsWith("{") || t.startsWith("[")) { try { add(JSON.parse(t)); } catch {} return out; }
+  for (const line of t.split("\n")) {
+    if (line.startsWith("data:")) { try { add(JSON.parse(line.slice(5).trim())); } catch {} }
+  }
+  return out;
+}
+
+async function logEvents(env, request, response, bodyText, isTeam, copy = null, latencyMs = null) {
   if (!env.ANALYTICS_DB || !bodyText) return;
+  await migrate(env.ANALYTICS_DB);
   let parsed;
   try {
     parsed = JSON.parse(bodyText);
@@ -132,20 +168,25 @@ async function logEvents(env, request, response, bodyText, isTeam) {
   const ua = (request.headers.get("user-agent") || "").slice(0, 200) || null;
   const initClient = events.find((e) => e.client_name)?.client_name || null;
 
+  let replies = new Map();
+  if (copy) { try { replies = rpcById(await copy.text()); } catch {} }
+
   const stmt = env.ANALYTICS_DB.prepare(
     `INSERT INTO events
-       (ts, session_id, method, tool, query, client_name, client_version, country, ua, kind)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (ts, session_id, method, tool, query, client_name, client_version, country, ua, kind, ok, result_count, latency_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   try {
     await env.ANALYTICS_DB.batch(
-      events.map((e) =>
-        stmt.bind(
+      events.map((e) => {
+        const o = e.method === "tools/call" ? outcomeOf(replies.get(String(e.id))) : { ok: null, count: null };
+        return stmt.bind(
           ts, sessionId, e.method, e.tool, e.query,
           e.client_name, e.client_version, country, ua,
-          classify(ua, e.client_name || initClient, isTeam)
-        )
-      )
+          classify(ua, e.client_name || initClient, isTeam),
+          o.ok, o.count, e.method === "tools/call" ? latencyMs : null
+        );
+      })
     );
   } catch (err) {
     console.error("analytics write failed:", err.message);
@@ -212,8 +253,21 @@ async function usageReport(env, url) {
                 GROUP BY agent ORDER BY events DESC LIMIT 15`).bind(since).all(),
   ]);
 
+  const [emptySearches, toolHealth, clicks] = await Promise.all([
+    q(`SELECT query, tool, COUNT(*) AS n FROM events WHERE ts >= ? AND ${inKinds} AND method='tools/call'
+       AND result_count = 0 AND query IS NOT NULL GROUP BY query, tool ORDER BY n DESC LIMIT 30`),
+    q(`SELECT tool, COUNT(*) AS calls, SUM(ok = 0) AS failed, CAST(AVG(latency_ms) AS INTEGER) AS avg_ms,
+       MAX(latency_ms) AS max_ms FROM events WHERE ts >= ? AND ${inKinds} AND method='tools/call'
+       AND latency_ms IS NOT NULL GROUP BY tool ORDER BY calls DESC`),
+    db.prepare(`SELECT target, item_id, COUNT(*) AS clicks FROM clicks WHERE ts >= ? AND kind = 'human'
+       GROUP BY target, item_id ORDER BY clicks DESC LIMIT 30`).bind(since).all(),
+  ]);
+
   return {
     period_days: days,
+    empty_searches: emptySearches.results ?? [],
+    tool_health: toolHealth.results ?? [],
+    watch_clicks: clicks.results ?? [],
     since,
     kind: kindParam,
     by_kind: byKind.results ?? [],
@@ -259,7 +313,15 @@ function normalizeText(t) {
 }
 
 // Additive schema changes, applied once per isolate (errors mean already applied).
-const MIGRATIONS = ["ALTER TABLE video_moments ADD COLUMN words TEXT"];
+const MIGRATIONS = [
+  "ALTER TABLE video_moments ADD COLUMN words TEXT",
+  "ALTER TABLE events ADD COLUMN ok INTEGER",
+  "ALTER TABLE events ADD COLUMN result_count INTEGER",
+  "ALTER TABLE events ADD COLUMN latency_ms INTEGER",
+  `CREATE TABLE IF NOT EXISTS clicks (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL,
+     target TEXT, item_id INTEGER, country TEXT, kind TEXT)`,
+  "CREATE INDEX IF NOT EXISTS idx_clicks_ts ON clicks (ts)",
+];
 let migrated = null;
 function migrate(db) {
   migrated ??= Promise.all(MIGRATIONS.map((sql) => db.prepare(sql).run().catch(() => null)));
@@ -675,6 +737,25 @@ th{font-size:13px;color:var(--muted);font-weight:600}a{color:inherit}
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-robots-tag": "noindex" } });
 }
 
+// ---------------------------------------------------------------------------
+// Watch-link clicks: /go/v/<id> and /go/s/<id> count the click (no personal data)
+// and send the viewer to the platform page with UTM tags for its own analytics.
+// ---------------------------------------------------------------------------
+const UTM = "utm_source=ai_assistant&utm_medium=mcp&utm_campaign=aj360_mcp";
+const LINK_BOT = /bot|crawl|spider|preview|slurp|facebookexternalhit|curl|wget|python|node|go-http|headless/i;
+
+function trackedRedirect(request, env, ctx, target, id) {
+  const ua = request.headers.get("user-agent") || "";
+  const kind = LINK_BOT.test(ua) || !/mozilla/i.test(ua) ? "automated" : "human";
+  if (env.ANALYTICS_DB) {
+    ctx.waitUntil(migrate(env.ANALYTICS_DB).then(() => env.ANALYTICS_DB.prepare(
+      "INSERT INTO clicks (ts, target, item_id, country, kind) VALUES (?, ?, ?, ?, ?)")
+      .bind(new Date().toISOString(), target, id, request.cf?.country ?? null, kind).run())
+      .catch((err) => console.error("click log failed:", err.message)));
+  }
+  return Response.redirect(`https://www.aljazeera360.com/${target}/${id}?${UTM}`, 302);
+}
+
 // Retention promised in the privacy policy (/privacy): 180 days.
 const RETENTION_DAYS = 180;
 
@@ -688,7 +769,8 @@ export default {
     if (!env.ANALYTICS_DB) return;
     const cutoff = new Date(Date.now() - RETENTION_DAYS * 86400_000).toISOString();
     ctx.waitUntil(
-      env.ANALYTICS_DB.prepare("DELETE FROM events WHERE ts < ?").bind(cutoff).run()
+      env.ANALYTICS_DB.prepare("DELETE FROM clicks WHERE ts < ?").bind(cutoff).run().catch(() => null)
+        .then(() => env.ANALYTICS_DB.prepare("DELETE FROM events WHERE ts < ?").bind(cutoff).run())
         .then((r) => console.log(`retention: deleted ${r.meta?.changes ?? 0} rows older than ${cutoff}`))
         .catch((err) => console.error("retention failed:", err.message))
     );
@@ -712,6 +794,8 @@ export default {
 
     if (url.pathname.startsWith("/internal/")) return handleInternal(request, url, env);
     if (url.pathname.startsWith("/clips/") && request.method === "GET") return serveClip(request, url, env);
+    const go = url.pathname.match(/^\/go\/(v|s)\/(\d{1,12})$/);
+    if (go) return trackedRedirect(request, env, ctx, go[1] === "s" ? "series" : "video", Number(go[2]));
 
     // Private team endpoint: /team/<token>/mcp → the full-profile container.
     let isTeam = false;
@@ -765,7 +849,11 @@ export default {
     const container = isTeam
       ? env.AJ360_TEAM_CONTAINER.getByName("mcp-team")
       : env.AJ360_CONTAINER.getByName("mcp");
+    const started = Date.now();
     let response = await container.fetch(request);
+    const latencyMs = Date.now() - started;
+    // Tool results are read (from a copy) to record failures and empty searches.
+    const copy = bodyText && bodyText.includes('"tools/call"') ? response.clone() : null;
 
     // The server runs stateless (no mcp-session-id), so a sleeping or
     // redeployed container can never strand a client on a dead session.
@@ -777,7 +865,7 @@ export default {
       response.headers.set("mcp-session-id", crypto.randomUUID());
     }
 
-    if (bodyText) ctx.waitUntil(logEvents(env, request, response, bodyText, isTeam));
+    if (bodyText) ctx.waitUntil(logEvents(env, request, response, bodyText, isTeam, copy, latencyMs));
     return response;
   },
 };

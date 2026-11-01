@@ -19,6 +19,20 @@ CREATE TABLE IF NOT EXISTS events (
   kind           TEXT             -- human | team | automated (see classify() in src/index.js)
 );
 -- Existing databases: ALTER TABLE events ADD COLUMN kind TEXT;
+-- Tool outcome (added by the Worker's migrate() on first use):
+--   ok INTEGER (1 = answered, 0 = failed), result_count INTEGER (items a search returned; 0 = nothing found),
+--   latency_ms INTEGER (time the server took for the request).
+
+-- Clicks on watch links in AI answers (/go/v/<id>, /go/s/<id>). No IP or personal data.
+CREATE TABLE IF NOT EXISTS clicks (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts      TEXT NOT NULL,
+  target  TEXT,      -- video | series
+  item_id INTEGER,
+  country TEXT,
+  kind    TEXT       -- human | automated (link previews, bots)
+);
+CREATE INDEX IF NOT EXISTS idx_clicks_ts ON clicks (ts);
 
 CREATE INDEX IF NOT EXISTS idx_events_ts      ON events (ts);
 CREATE INDEX IF NOT EXISTS idx_events_session ON events (session_id);
