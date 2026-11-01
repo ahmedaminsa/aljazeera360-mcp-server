@@ -550,3 +550,15 @@ def test_watch_links_are_tracked_only_when_configured(monkeypatch):
     monkeypatch.setattr(server, "TRACK_URL", "https://h/go")
     assert server.watch_link("video", 12) == "https://h/go/v/12"
     assert server.watch_link("series", 7) == "https://h/go/s/7"
+
+
+def test_search_reports_when_nothing_matches(monkeypatch):
+    async def fake_search(query, page_size=20):
+        return {"elements": [{"cardList": [{"action": {"data": {"type": "VOD", "id": 5, "title": "حلقة عن الاقتصاد"}}}]}]}
+    async def fake_section(*a, **k):
+        return {"buckets": []}
+    monkeypatch.setattr(server.client, "search_content", fake_search)
+    monkeypatch.setattr(server.client, "get_section_content", fake_section)
+    out = json.loads(asyncio.run(server.search_videos("زززقققلللمستحيل")))
+    assert out["matching_results"] == 0
+    assert out["total_results"] == 0 or "No title" in out["search_note"]

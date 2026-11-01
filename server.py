@@ -1281,12 +1281,23 @@ async def search_videos(query: str, content_type: Optional[str] = None, max_resu
                             remaining_slots -= 1
                     results = merged
         
+        # Results whose title or description actually contains the query (the platform search
+        # never returns nothing: without a match it falls back to recent or popular episodes).
+        keys = [query_lower] + query_words
+        matching = sum(1 for r in results
+                       if any(kw in f"{r.get('title', '')} {r.get('description', '')}".lower() for kw in keys))
+        note = ("Results include both keyword-matched and trending content" if browse_results
+                else "Results from platform search")
+        if results and not matching:
+            note = ("No title or description matches this query. These are recent or popular episodes "
+                    "instead, not matches; say so to the user.")
         output = {
             "query": query,
             "content_type_filter": content_type,
             "total_results": len(results),
+            "matching_results": matching,
             "platform": "Al Jazeera 360",
-            "search_note": "Results include both keyword-matched and trending content" if browse_results else "Results from platform search",
+            "search_note": note,
             "results": results,
         }
         

@@ -126,7 +126,8 @@ function outcomeOf(rpc) {
   try { data = JSON.parse(text); } catch { return { ok: 1, count: null }; }
   if (!data || typeof data !== "object") return { ok: 1, count: null };
   if (data.error) return { ok: 0, count: null };
-  for (const k of ["total_results", "total_matches", "total_found", "total_people", "total_episodes"]) {
+  // matching_results first: platform search always returns something, relevant or not.
+  for (const k of ["matching_results", "total_matches", "total_found", "total_people", "total_results", "total_episodes"]) {
     if (typeof data[k] === "number") return { ok: 1, count: data[k] };
   }
   for (const k of ["results", "episodes", "latest_episodes", "people", "moments"]) {
